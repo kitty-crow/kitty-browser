@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "playwright": "^1.55.0",
-    "pngjs": "^7.0.0"
+    "pngjs": "^7.0.0",
+    "tldts": "^7.0.0"
   }
 }
