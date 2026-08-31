@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import { xvfbReexecCommand } from "./runtime-exec.ts";
 import { consumeBrowserSessionArg } from "./terminal-session.ts";
 import {
   autoResolutionEnabled,
@@ -26,9 +27,7 @@ const ensureVirtualDisplay = async (): Promise<void> => {
       "-a",
       "-s",
       "-screen 0 1920x1080x24 -nolisten tcp",
-      process.execPath,
-      import.meta.path,
-      ...process.argv.slice(2),
+      ...xvfbReexecCommand(import.meta.path, "sixel"),
     ], {
       stdin: "inherit",
       stdout: "inherit",
