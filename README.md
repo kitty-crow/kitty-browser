@@ -10,7 +10,7 @@ It is consumed by `kitty-crow/openAI-pilot-headed` as a pinned vendored submodul
 
 - `terminal`: probes the terminal and selects Kitty graphics, then SIXEL, then native Unicode as the portable fallback.
 - `terminal:unicode`: terminal-native full-colour Braille with literal DOM text projection. It deliberately does not accept `--resolution`.
-- `terminal:dense-unicode`: high-density full-colour Braille. Browser text remains in Chromium's pixel raster and is converted into Braille subpixels with the page, so typography scales down with the selected viewport resolution.
+- `terminal:dense-unicode`: high-density full-colour Braille. Chromium renders at the requested viewport resolution, then the complete framebuffer is fitted into the physical terminal through Unicode Art Studio's ordinary Braille pipeline. Browser typography is therefore rasterised and squeezed with the page rather than emitted as full-size terminal characters.
 - `terminal:sixel`: Chromium raster frames over SIXEL.
 - `terminal:kitty`: Chromium PNG frames over the Kitty graphics protocol.
 - `terminal:capabilities`: reports terminal capabilities used by the renderers.
@@ -39,7 +39,7 @@ bun run terminal:kitty -- https://example.com --resolution 720p --fps 24
 
 `terminal:unicode` always derives its Chromium viewport from the terminal text grid and rejects `--resolution`.
 
-`terminal:dense-unicode` defaults to `720p` and accepts `native`, convenience presets such as `cga`, `800x600`, `960x540`, `720p`, and `1080p`, or any positive integer `WIDTHxHEIGHT`. Fixed resolutions create a 2x4-browser-pixel-per-Braille-cell virtual canvas that can be panned through the physical terminal.
+`terminal:dense-unicode` defaults to `720p` and accepts `native`, convenience presets such as `cga`, `800x600`, `960x540`, `720p`, and `1080p`, or any positive integer `WIDTHxHEIGHT`. The requested resolution is the real Chromium viewport. Each captured frame is then aspect-fitted into the available terminal rows and columns using Unicode Art Studio's 2x4-dot-per-cell Braille conversion. There is no resolution-sized virtual canvas, no panning, and no literal DOM-text overlay.
 
 The render loops are sequential and do not queue stale frames. Mouse, keyboard, scrolling, focus navigation and text entry are forwarded to the real Chromium page.
 
