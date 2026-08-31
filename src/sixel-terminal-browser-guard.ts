@@ -101,4 +101,4 @@ if (!sixelCapable) {
 }
 
 process.env.OPENAI_PILOT_RENDERER = "sixel";
-await import("./kitty-terminal-browser.ts");
+await import("./sixel-terminal-browser.ts");
