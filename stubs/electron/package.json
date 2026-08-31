@@ -1,0 +1,6 @@
+{
+  "name": "electron",
+  "version": "0.0.0-kitty-browser-stub",
+  "private": true,
+  "main": "index.cjs"
+}
