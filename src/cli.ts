@@ -1,5 +1,9 @@
 #!/usr/bin/env bun
 import { consumeBrowserSessionArg } from "./terminal-session.ts";
+import {
+  freezeTerminalGeometry,
+  setAutoResolutionEnabled,
+} from "./terminal-auto-resolution.ts";
 
 type Renderer = "auto" | "unicode" | "sixel" | "kitty";
 
@@ -22,7 +26,7 @@ Options:
   --session <id>             Persistent Chromium session/profile; default "default"
   --strict                   Restrict top-level navigation to the launch URL's registrable domain
   --fps <n>                  Capture rate, integer 1-24; default 12
-  --resolution <mode>        SIXEL/Kitty only: named preset or WIDTHxHEIGHT
+  --resolution <mode>        SIXEL/Kitty: auto (default), native, named preset, or WIDTHxHEIGHT
   --no-status                Hide the bottom navigation/status bar
   -h, --help                 Show this help
 
@@ -30,16 +34,24 @@ Browser shortcuts:
   Backspace                  Go back only when the focused webpage element is not editable
   Ctrl+H                     Return to the original URL supplied on launch
 
+Resolution modes:
+  auto                       Snapshot terminal columns/rows at startup and keep them fixed
+  native                     Follow the terminal's live geometry
+  WIDTHxHEIGHT               Fixed Chromium viewport, e.g. 960x540
+
 Examples:
   bun . https://kittycrow.dev
   bun . https://kittycrow.dev --render unicode
-  bun . https://kittycrow.dev --render sixel --resolution 960x540
+  bun . https://kittycrow.dev --render sixel
   bun . https://kittycrow.dev --render kitty --resolution 720p
+  bun . https://kittycrow.dev --render kitty --resolution native
   bun . https://kittycrow.dev --render kitty --session personal --no-status
   bun . https://app.example.co.uk --strict
 
 The default renderer is auto: Kitty graphics when available, otherwise SIXEL, otherwise
-Unicode. Unicode is terminal-native and deliberately does not accept --resolution.
+Unicode. Kitty and SIXEL default to startup-frozen auto resolution, so reopening the
+browser is required to pick up a changed terminal size. Unicode is terminal-native and
+deliberately does not accept --resolution.
 
 Strict mode allows navigation between subdomains of the same registrable domain, but
 blocks top-level navigation to a different registrable domain. Third-party page resources
@@ -114,6 +126,45 @@ const validateAndDefaultFpsArg = (argv = process.argv): void => {
   if (!found) argv.push("--fps", String(DEFAULT_FPS));
 };
 
+const configureResolutionMode = (renderer: Renderer, argv = process.argv): boolean => {
+  let sawResolution = false;
+  let auto = false;
+
+  for (let i = 2; i < argv.length; i += 1) {
+    const value = argv[i]!;
+    let raw: string | undefined;
+    let removeCount = 0;
+
+    if (value === "--resolution" || value === "-r") {
+      raw = argv[i + 1];
+      if (!raw) throw new Error("--resolution requires a mode");
+      removeCount = 2;
+    } else if (value.startsWith("--resolution=")) {
+      raw = value.slice("--resolution=".length);
+      if (!raw) throw new Error("--resolution requires a mode");
+      removeCount = 1;
+    } else {
+      continue;
+    }
+
+    if (sawResolution) throw new Error("--resolution may only be specified once");
+    sawResolution = true;
+
+    if (raw.toLowerCase() === "auto") {
+      if (renderer === "unicode") {
+        throw new Error("--resolution auto is only available with SIXEL or Kitty rendering");
+      }
+      auto = true;
+      argv.splice(i, removeCount);
+      i -= 1;
+    }
+  }
+
+  if (!sawResolution && renderer !== "unicode") auto = true;
+  setAutoResolutionEnabled(auto);
+  return auto;
+};
+
 const findLaunchUrl = (argv = process.argv): string | undefined => {
   const takesValue = new Set(["--fps", "--resolution", "-r"]);
   for (let i = 2; i < argv.length; i += 1) {
@@ -136,6 +187,7 @@ const renderer = consumeRendererArg();
 consumeBrowserSessionArg();
 consumeStrictArg();
 validateAndDefaultFpsArg();
+const autoResolution = configureResolutionMode(renderer);
 
 const homeUrl = findLaunchUrl();
 if (!homeUrl) help(2);
@@ -151,10 +203,12 @@ switch (renderer) {
     await import("./unicode-terminal-browser.ts");
     break;
   case "sixel":
+    if (autoResolution) freezeTerminalGeometry();
     process.env.OPENAI_PILOT_RENDERER = "sixel";
     await import("./sixel-terminal-browser-guard.ts");
     break;
   case "kitty":
+    if (autoResolution) freezeTerminalGeometry();
     process.env.OPENAI_PILOT_RENDERER = "kitty";
     await import("./kitty-terminal-browser-guard.ts");
     break;
