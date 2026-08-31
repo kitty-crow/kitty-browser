@@ -3,6 +3,7 @@ import { mkdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { installBrowserShortcuts } from "./browser-shortcuts.ts";
+import { bundledChromiumExecutable } from "./bundled-chromium.ts";
 import { browserHomeUrl, installStrictNavigation } from "./navigation-policy.ts";
 import { browserSessionId } from "./terminal-session.ts";
 
@@ -36,9 +37,14 @@ export const launchPersistentBrowser = async (
   const profileDir = profileDirectory(session);
   await mkdir(profileDir, { recursive: true });
 
+  const executablePath = await bundledChromiumExecutable();
   const context = await chromium.launchPersistentContext(profileDir, {
     headless: options.headless,
-    ...(options.channel ? { channel: options.channel } : {}),
+    ...(executablePath
+      ? { executablePath }
+      : options.channel
+        ? { channel: options.channel }
+        : {}),
   });
 
   await installStrictNavigation(context, browserHomeUrl());
