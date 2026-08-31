@@ -29,13 +29,35 @@ Renderer selection is an argument rather than a separate package script:
 ```bash
 bun . https://example.com --render auto
 bun . https://example.com --render unicode
-bun . https://example.com --render sixel --resolution 960x540
-bun . https://example.com --render kitty --resolution 720p
+bun . https://example.com --render sixel
+bun . https://example.com --render kitty
 ```
 
 `--render auto` is the default. `bun run terminal -- ...` remains as a compatibility alias.
 
 The capture rate defaults to 12 FPS. `--fps` accepts integer values from 1 through 24 inclusive; values outside that range are rejected.
+
+## Raster resolution
+
+SIXEL and Kitty use `auto` resolution by default. Auto resolution captures the terminal columns and rows once when Kitty Browser starts and keeps that exact geometry for the lifetime of the process. The renderer uses its terminal-native raster density (8 browser pixels per terminal column and 16 browser pixels per terminal row), excluding the navigation/status row when it is shown.
+
+This prevents the default raster path from unnecessarily rendering a fixed 720p or 1080p framebuffer when the terminal has a much smaller display grid. If the terminal is resized after launch, auto resolution deliberately does not change. Close and reopen Kitty Browser to capture the new terminal geometry.
+
+```bash
+bun . https://example.com --render kitty
+bun . https://example.com --render sixel
+bun . https://example.com --render kitty --resolution auto
+```
+
+`--resolution native` remains available as the explicit live-terminal mode. It follows terminal geometry changes during the run. Named presets and arbitrary positive `WIDTHxHEIGHT` values remain fixed Chromium viewport overrides:
+
+```bash
+bun . https://example.com --render kitty --resolution native
+bun . https://example.com --render kitty --resolution 720p
+bun . https://example.com --render sixel --resolution 960x540
+```
+
+The startup auto-resolution snapshot is carried across the Linux Xvfb re-exec, so headed Chromium still receives the geometry from the original terminal launch.
 
 ## Browser sessions and persistence
 
@@ -85,6 +107,8 @@ Two global keyboard navigation shortcuts are available even when the status bar 
 - `Backspace` goes to the previous page only when Chromium's currently focused webpage element is not an editable input, textarea or contenteditable element. If an editable webpage element is focused, Backspace is sent to Chromium instead.
 - `Ctrl+H` returns directly to the original URL supplied when Kitty Browser was launched.
 
+The launch/home page is the Back-history floor. Pressing Backspace or clicking `[<]` there is a no-op and never exposes Chromium's bootstrap `about:blank` page.
+
 ## Strict navigation
 
 Use `--strict` to confine top-level browsing to the launch URL's registrable domain:
@@ -116,13 +140,14 @@ On headless Linux hosts, graphical renderers that use real headed Chromium boots
 ```bash
 bun . https://example.com --session default
 bun . https://example.com --render unicode --session personal
-bun . https://example.com --render sixel --resolution 720p --session testing
-bun . https://example.com --render kitty --resolution 720p --session work
+bun . https://example.com --render sixel --session testing
+bun . https://example.com --render kitty --session work
+bun . https://example.com --render kitty --resolution 720p
 bun . https://example.com --render kitty --no-status
 bun . https://example.com --strict
 ```
 
-The Unicode renderer always derives its Chromium viewport from the terminal text grid. SIXEL and Kitty expose arbitrary positive integer `WIDTHxHEIGHT` viewport resolutions as well as named presets.
+The Unicode renderer always derives its Chromium viewport from the terminal text grid. SIXEL and Kitty default to startup-frozen auto resolution and also expose live `native`, named presets, and arbitrary positive integer `WIDTHxHEIGHT` viewport resolutions.
 
 The render loops are sequential and do not queue stale frames. Mouse, keyboard, scrolling, focus navigation and text entry are forwarded to the real Chromium page.
 
