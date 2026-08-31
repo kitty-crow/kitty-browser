@@ -6,30 +6,47 @@ Kitty Browser owns browser runtime behaviour independently of any agent or model
 
 It is consumed by `kitty-crow/openAI-pilot-headed` as a pinned vendored submodule. Agent schemas, OpenAI Pilot bridges, agent overlays, planning and model-facing behaviour do not belong here.
 
-## Renderers
+## CLI and renderers
 
-Kitty Browser has three renderers:
+The package entrypoint is the browser CLI:
 
-- `terminal:unicode`: terminal-native full-colour Unicode Braille with literal DOM text projection. It deliberately does not accept `--resolution`.
-- `terminal:sixel`: Chromium raster frames over SIXEL.
-- `terminal:kitty`: Chromium PNG frames over the Kitty graphics protocol.
+```bash
+bun . https://example.com
+```
 
-`terminal` probes the terminal and automatically selects Kitty graphics, then SIXEL, then Unicode as the portable fallback. `terminal:capabilities` reports the terminal capabilities used by that selection logic.
+Select a renderer with `--render`:
+
+```bash
+bun . https://example.com --render auto
+bun . https://example.com --render unicode
+bun . https://example.com --render sixel --resolution 960x540
+bun . https://example.com --render kitty --resolution 720p
+```
+
+`--render auto` is the default. Auto probes the terminal and selects Kitty graphics first, then SIXEL, then Unicode as the portable fallback.
+
+The three renderers are:
+
+- `unicode`: terminal-native full-colour Unicode Braille with literal DOM text projection. It deliberately does not accept `--resolution`.
+- `sixel`: Chromium raster frames over SIXEL.
+- `kitty`: Chromium PNG frames over the Kitty graphics protocol.
+
+`bun run terminal -- ...` remains a compatibility alias for `bun . ...`. Bare `bun run` itself is a Bun CLI command that lists package scripts and cannot be reassigned by this package. `bun run terminal:capabilities` reports the terminal capabilities used by auto-selection.
 
 ## Browser sessions and persistence
 
 Every renderer uses a real persistent Chromium user-data directory. With no explicit session, Kitty Browser uses the persistent session named `default`:
 
 ```bash
-bun run terminal:unicode -- https://example.com
+bun . https://example.com
 ```
 
 Use `--session <id>` to create or reopen an independent Chromium profile:
 
 ```bash
-bun run terminal:unicode -- https://example.com --session personal
-bun run terminal:kitty -- https://example.com --session work --resolution 960x540
-bun run terminal:sixel -- https://example.com --session testing --resolution 800x600
+bun . https://example.com --render unicode --session personal
+bun . https://example.com --render kitty --session work --resolution 960x540
+bun . https://example.com --render sixel --session testing --resolution 800x600
 ```
 
 The same session ID refers to the same Chromium profile across all three renderers. Different session IDs are isolated from one another. Session IDs are 1-64 characters, may use letters, numbers, `.`, `_` and `-`, and must start with a letter or number.
@@ -72,10 +89,11 @@ On headless Linux hosts, graphical renderers that use real headed Chromium boots
 ## Usage
 
 ```bash
-bun run terminal -- https://example.com --session default
-bun run terminal:unicode -- https://example.com --fps 4 --session personal
-bun run terminal:sixel -- https://example.com --resolution 720p --fps 4 --session testing
-bun run terminal:kitty -- https://example.com --resolution 720p --fps 24 --session work
+bun . https://example.com --session default
+bun . https://example.com --render unicode --fps 4 --session personal
+bun . https://example.com --render sixel --resolution 720p --fps 4 --session testing
+bun . https://example.com --render kitty --resolution 720p --fps 24 --session work
+bun . https://example.com --render kitty --no-status
 ```
 
 The Unicode renderer always derives its Chromium viewport from the terminal text grid. SIXEL and Kitty expose arbitrary positive integer `WIDTHxHEIGHT` viewport resolutions as well as named presets.
