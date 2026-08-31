@@ -9,8 +9,8 @@
   "scripts": {
     "terminal": "bun src/cli.ts",
     "terminal:capabilities": "bun src/terminal-capabilities.ts",
-    "release": "bun scripts/release-runner.ts",
-    "release:build": "bun scripts/release-runner.ts --build-only"
+    "release": "bun scripts/release.ts",
+    "release:build": "bun scripts/release.ts --build-only"
   },
   "dependencies": {
     "chromium-bidi": "7.2.0",
