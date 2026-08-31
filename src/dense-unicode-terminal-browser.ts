@@ -2,6 +2,7 @@
 import { chromium, type Page } from "playwright";
 import { PNG } from "pngjs";
 import { makeArt } from "../vendor/unicode-art-studio/src/core/art.ts";
+import { artSize } from "../vendor/unicode-art-studio/src/core/size.ts";
 import type { CellColour, Rgb } from "../vendor/unicode-art-studio/src/types.ts";
 import {
   MOUSE_DISABLE,
@@ -24,24 +25,26 @@ interface Args {
   readonly resolution: Resolution;
 }
 
-interface Cell {
-  readonly ch: string;
-  readonly fg?: Rgb;
-  readonly bg?: Rgb;
-}
-
 interface TerminalSize {
   readonly columns: number;
   readonly rows: number;
 }
 
 interface Geometry extends TerminalSize {
-  readonly logicalColumns: number;
-  readonly logicalRows: number;
   readonly browserWidth: number;
   readonly browserHeight: number;
-  readonly cellWidth: number;
-  readonly cellHeight: number;
+  readonly renderColumns: number;
+  readonly renderRows: number;
+  readonly offsetX: number;
+  readonly offsetY: number;
+  readonly browserCellWidth: number;
+  readonly browserCellHeight: number;
+}
+
+interface Cell {
+  readonly ch: string;
+  readonly fg?: Rgb;
+  readonly bg?: Rgb;
 }
 
 interface SwipeState {
@@ -102,24 +105,24 @@ Options:
                              or any positive WIDTHxHEIGHT; default 720p
   --no-status                Hide the bottom status bar
 
+Dense Unicode renders Chromium at the requested viewport resolution, captures that full
+frame, then feeds it through Unicode Art Studio's ordinary full-colour Braille pipeline.
+The complete frame is fitted into the physical terminal grid while preserving aspect
+ratio. There is no literal DOM-text overlay, no resolution-sized virtual canvas and no
+panning: browser typography is rasterised and becomes smaller/denser with the page.
+
 Controls:
-  Mouse move                 Move/hover the logical pointer
+  Mouse move                 Move/hover the browser pointer
   Left click / tap           Activate the page position
   Left drag / touch swipe    Scroll naturally; release does not click after a swipe
   Wheel / two-finger swipe   Scroll vertically or horizontally
   Right / middle click       Forward the corresponding browser button
-  Arrow keys                 Move the logical pointer one Braille cell
-                             At a terminal edge, pan the dense virtual canvas
-                             At a logical canvas edge, scroll Chromium
+  Arrow keys                 Move one displayed Braille cell; at an edge, scroll
   Enter                      Activate/click selected page position
   Tab / Shift+Tab            Follow Chromium's native focus order
   PgUp / PgDn                Scroll browser viewport
   Esc                        Leave text-entry mode
-  Ctrl+C                     Quit
-
-Dense Unicode keeps browser text inside Chromium's pixel raster and converts those glyph
-shapes into Braille subpixels together with the rest of the page. It deliberately does
-not overlay full-size terminal characters, so text scales down as resolution increases.`);
+  Ctrl+C                     Quit`);
   process.exit(code);
 };
 
@@ -179,36 +182,46 @@ const ensureVirtualDisplay = async (): Promise<void> => {
   process.exit(await child.exited);
 };
 
+const clamp = (value: number, lo: number, hi: number): number => Math.min(hi, Math.max(lo, value));
 const eqRgb = (a?: Rgb, b?: Rgb): boolean =>
   (!a && !b) || (!!a && !!b && a.r === b.r && a.g === b.g && a.b === b.b);
-
 const eqCell = (a?: Cell, b?: Cell): boolean =>
   !!a && !!b && a.ch === b.ch && eqRgb(a.fg, b.fg) && eqRgb(a.bg, b.bg);
-
 const ansiFg = (rgb?: Rgb): string => rgb ? `\x1b[38;2;${rgb.r};${rgb.g};${rgb.b}m` : "\x1b[39m";
 const ansiBg = (rgb?: Rgb): string => rgb ? `\x1b[48;2;${rgb.r};${rgb.g};${rgb.b}m` : "\x1b[49m";
 const at = (x: number, y: number): string => `\x1b[${y + 1};${x + 1}H`;
-const clamp = (value: number, lo: number, hi: number): number => Math.min(hi, Math.max(lo, value));
 
 const terminalSize = (showStatus: boolean): TerminalSize => ({
   columns: Math.max(8, process.stdout.columns ?? 120),
   rows: Math.max(4, (process.stdout.rows ?? 40) - (showStatus ? 1 : 0)),
 });
 
+const fitColumns = (browserWidth: number, browserHeight: number, terminal: TerminalSize): number => {
+  for (let columns = terminal.columns; columns >= 8; columns -= 1) {
+    if (artSize(browserWidth, browserHeight, columns).rows <= terminal.rows) return columns;
+  }
+  return 8;
+};
+
 const geometryFor = (terminal: TerminalSize, resolution: Resolution): Geometry => {
   const fixed = resolution.width !== undefined && resolution.height !== undefined;
   const browserWidth = fixed ? resolution.width! : terminal.columns * NATIVE_CELL_WIDTH;
   const browserHeight = fixed ? resolution.height! : terminal.rows * NATIVE_CELL_HEIGHT;
-  const logicalColumns = fixed ? Math.max(1, Math.ceil(browserWidth / 2)) : terminal.columns;
-  const logicalRows = fixed ? Math.max(1, Math.ceil(browserHeight / 4)) : terminal.rows;
+  const renderColumns = fitColumns(browserWidth, browserHeight, terminal);
+  const renderRows = Math.min(terminal.rows, artSize(browserWidth, browserHeight, renderColumns).rows);
+  const offsetX = Math.max(0, Math.floor((terminal.columns - renderColumns) / 2));
+  const offsetY = Math.max(0, Math.floor((terminal.rows - renderRows) / 2));
+
   return {
     ...terminal,
-    logicalColumns,
-    logicalRows,
     browserWidth,
     browserHeight,
-    cellWidth: browserWidth / logicalColumns,
-    cellHeight: browserHeight / logicalRows,
+    renderColumns,
+    renderRows,
+    offsetX,
+    offsetY,
+    browserCellWidth: browserWidth / renderColumns,
+    browserCellHeight: browserHeight / renderRows,
   };
 };
 
@@ -285,7 +298,6 @@ const editableAt = async (page: Page, x: number, y: number): Promise<boolean> =>
 
 const args = parse(process.argv.slice(2));
 if (!process.stdin.isTTY || !process.stdout.isTTY) throw new Error("terminal:dense-unicode requires an interactive TTY");
-
 await ensureVirtualDisplay();
 
 const browser = await chromium.launch({ headless: false, channel: "chromium" });
@@ -296,10 +308,8 @@ await page.goto(args.url, { waitUntil: "domcontentloaded", timeout: 30_000 });
 
 let running = true;
 let inputMode = false;
-let cursorX = Math.min(Math.floor(geometry.columns / 2), geometry.logicalColumns - 1);
-let cursorY = Math.min(Math.floor(geometry.rows / 2), geometry.logicalRows - 1);
-let viewX = 0;
-let viewY = 0;
+let cursorX = Math.floor(geometry.renderColumns / 2);
+let cursorY = Math.floor(geometry.renderRows / 2);
 let frame = 0;
 let baseCells: Cell[] = [];
 let painted: Cell[] = [];
@@ -310,24 +320,13 @@ let swipe: SwipeState | undefined;
 let auxiliaryButton: MouseButton | undefined;
 const mouseDecoder = new TerminalMouseDecoder();
 
-const ensureCursorVisible = (): void => {
-  if (cursorX < viewX) viewX = cursorX;
-  else if (cursorX >= viewX + geometry.columns) viewX = cursorX - geometry.columns + 1;
-  if (cursorY < viewY) viewY = cursorY;
-  else if (cursorY >= viewY + geometry.rows) viewY = cursorY - geometry.rows + 1;
-  viewX = clamp(viewX, 0, Math.max(0, geometry.logicalColumns - geometry.columns));
-  viewY = clamp(viewY, 0, Math.max(0, geometry.logicalRows - geometry.rows));
-};
-
 page.on("framenavigated", (frameHandle) => {
   if (frameHandle !== page.mainFrame()) return;
   inputMode = false;
   swipe = undefined;
   auxiliaryButton = undefined;
-  viewX = 0;
-  viewY = 0;
-  cursorX = Math.min(Math.floor(geometry.columns / 2), geometry.logicalColumns - 1);
-  cursorY = Math.min(Math.floor(geometry.rows / 2), geometry.logicalRows - 1);
+  cursorX = Math.floor(geometry.renderColumns / 2);
+  cursorY = Math.floor(geometry.renderRows / 2);
   forceFull = true;
   painted = [];
   lastStatus = "";
@@ -340,7 +339,7 @@ const status = (): string => {
   const resolution = args.resolution.name === "native"
     ? `native ${geometry.browserWidth}x${geometry.browserHeight}`
     : `${args.resolution.name} ${geometry.browserWidth}x${geometry.browserHeight}`;
-  const raw = ` ${page.url()}  ${mode}  ${args.fps}fps  dense-unicode  ${resolution}  canvas ${geometry.logicalColumns}x${geometry.logicalRows}  view ${viewX},${viewY}  pointer ${cursorX},${cursorY} `;
+  const raw = ` ${page.url()}  ${mode}  ${args.fps}fps  dense-unicode  ${resolution} -> ${geometry.renderColumns}x${geometry.renderRows} cells / ${geometry.renderColumns * 2}x${geometry.renderRows * 4} dots  pointer ${cursorX},${cursorY} `;
   return raw.length > geometry.columns ? raw.slice(0, geometry.columns) : raw.padEnd(geometry.columns, " ");
 };
 
@@ -353,11 +352,11 @@ const paintStatus = (full = false): void => {
 };
 
 const displayCell = (terminalX: number, terminalY: number): Cell => {
-  const logicalX = viewX + terminalX;
-  const logicalY = viewY + terminalY;
-  if (logicalX >= geometry.logicalColumns || logicalY >= geometry.logicalRows) return { ch: " " };
-  const base = baseCells[logicalY * geometry.logicalColumns + logicalX] ?? { ch: "⠀" };
-  return logicalX === cursorX && logicalY === cursorY ? cursorCell(base, pointerHighlighted()) : base;
+  const x = terminalX - geometry.offsetX;
+  const y = terminalY - geometry.offsetY;
+  if (x < 0 || y < 0 || x >= geometry.renderColumns || y >= geometry.renderRows) return { ch: " " };
+  const base = baseCells[y * geometry.renderColumns + x] ?? { ch: "⠀" };
+  return x === cursorX && y === cursorY ? cursorCell(base, pointerHighlighted()) : base;
 };
 
 const paint = (full = false): void => {
@@ -380,9 +379,9 @@ const paint = (full = false): void => {
   paintStatus(full);
 };
 
-const browserPoint = (logicalX: number, logicalY: number) => ({
-  x: (logicalX + 0.5) * geometry.cellWidth,
-  y: (logicalY + 0.5) * geometry.cellHeight,
+const browserPoint = (x: number, y: number) => ({
+  x: (x + 0.5) * geometry.browserCellWidth,
+  y: (y + 0.5) * geometry.browserCellHeight,
 });
 
 const hoverPointer = async (): Promise<void> => {
@@ -393,15 +392,12 @@ const hoverPointer = async (): Promise<void> => {
 const movePointer = async (dx: number, dy: number): Promise<void> => {
   const nextX = cursorX + dx;
   const nextY = cursorY + dy;
-
-  if (nextX < 0 || nextX >= geometry.logicalColumns || nextY < 0 || nextY >= geometry.logicalRows) {
-    await page.mouse.wheel(dx * geometry.cellWidth, dy * geometry.cellHeight);
+  if (nextX < 0 || nextX >= geometry.renderColumns || nextY < 0 || nextY >= geometry.renderRows) {
+    await page.mouse.wheel(dx * geometry.browserCellWidth, dy * geometry.browserCellHeight);
     return;
   }
-
   cursorX = nextX;
   cursorY = nextY;
-  ensureCursorVisible();
   await hoverPointer();
   paint(false);
 };
@@ -409,9 +405,8 @@ const movePointer = async (dx: number, dy: number): Promise<void> => {
 const followFocus = async (): Promise<void> => {
   const rect = await activeRect(page);
   if (!rect) return;
-  cursorX = clamp(Math.floor((rect.x + rect.width / 2) / geometry.cellWidth), 0, geometry.logicalColumns - 1);
-  cursorY = clamp(Math.floor((rect.y + rect.height / 2) / geometry.cellHeight), 0, geometry.logicalRows - 1);
-  ensureCursorVisible();
+  cursorX = clamp(Math.floor((rect.x + rect.width / 2) / geometry.browserCellWidth), 0, geometry.renderColumns - 1);
+  cursorY = clamp(Math.floor((rect.y + rect.height / 2) / geometry.browserCellHeight), 0, geometry.renderRows - 1);
   await hoverPointer();
   paint(false);
 };
@@ -424,10 +419,12 @@ const activate = async (): Promise<void> => {
   paintStatus(true);
 };
 
-const pointFromMouse = async (x: number, y: number): Promise<boolean> => {
-  if (x < 0 || x >= geometry.columns || y < 0 || y >= geometry.rows) return false;
-  cursorX = clamp(viewX + x, 0, geometry.logicalColumns - 1);
-  cursorY = clamp(viewY + y, 0, geometry.logicalRows - 1);
+const pointFromMouse = async (terminalX: number, terminalY: number): Promise<boolean> => {
+  const x = terminalX - geometry.offsetX;
+  const y = terminalY - geometry.offsetY;
+  if (x < 0 || x >= geometry.renderColumns || y < 0 || y >= geometry.renderRows) return false;
+  cursorX = x;
+  cursorY = y;
   await hoverPointer();
   paint(false);
   return true;
@@ -438,8 +435,8 @@ const handleMouse = async (event: TerminalMouseEvent): Promise<void> => {
 
   if (event.kind === "wheel") {
     swipe = undefined;
-    const stepX = Math.max(MIN_WHEEL_PIXELS, geometry.cellWidth * WHEEL_CELL_MULTIPLIER);
-    const stepY = Math.max(MIN_WHEEL_PIXELS, geometry.cellHeight * WHEEL_CELL_MULTIPLIER);
+    const stepX = Math.max(MIN_WHEEL_PIXELS, geometry.browserCellWidth * WHEEL_CELL_MULTIPLIER);
+    const stepY = Math.max(MIN_WHEEL_PIXELS, geometry.browserCellHeight * WHEEL_CELL_MULTIPLIER);
     await page.mouse.wheel(event.dx * stepX, event.dy * stepY);
     return;
   }
@@ -462,7 +459,7 @@ const handleMouse = async (event: TerminalMouseEvent): Promise<void> => {
       swipe.moved = true;
       swipe.lastX = event.x;
       swipe.lastY = event.y;
-      await page.mouse.wheel(-dx * geometry.cellWidth, -dy * geometry.cellHeight);
+      await page.mouse.wheel(-dx * geometry.browserCellWidth, -dy * geometry.browserCellHeight);
     }
     return;
   }
@@ -486,10 +483,8 @@ const applyResize = async (): Promise<void> => {
   const previous = geometry;
   geometry = geometryFor(terminalSize(args.status), args.resolution);
   const browserChanged = previous.browserWidth !== geometry.browserWidth || previous.browserHeight !== geometry.browserHeight;
-
-  cursorX = clamp(cursorX, 0, geometry.logicalColumns - 1);
-  cursorY = clamp(cursorY, 0, geometry.logicalRows - 1);
-  ensureCursorVisible();
+  cursorX = clamp(cursorX, 0, geometry.renderColumns - 1);
+  cursorY = clamp(cursorY, 0, geometry.renderRows - 1);
   if (browserChanged) await page.setViewportSize({ width: geometry.browserWidth, height: geometry.browserHeight });
   process.stdout.write("\x1b[2J");
   painted = [];
@@ -505,7 +500,7 @@ const capture = async (): Promise<void> => {
     const art = makeArt(
       { width: png.width, height: png.height, data: png.data },
       {
-        columns: geometry.logicalColumns,
+        columns: geometry.renderColumns,
         dither: "atkinson",
         contrast: 1,
         detail: 0.8,
@@ -517,7 +512,7 @@ const capture = async (): Promise<void> => {
       },
     );
 
-    baseCells = cellsFromArt(art.text, art.cellColours, geometry.logicalColumns, geometry.logicalRows);
+    baseCells = cellsFromArt(art.text, art.cellColours, geometry.renderColumns, geometry.renderRows);
     frame += 1;
     paint(forceFull);
     forceFull = false;
