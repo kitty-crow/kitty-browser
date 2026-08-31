@@ -71,8 +71,8 @@ const parseResolution = (raw: string): Resolution => {
   if (!match) throw new Error("--resolution must be native, a named preset, or WIDTHxHEIGHT");
   const width = Number.parseInt(match[1]!, 10);
   const height = Number.parseInt(match[2]!, 10);
-  if (width < 800 || height < 600 || width > 1920 || height > 1080) {
-    throw new Error("custom --resolution must be between 800x600 and 1920x1080");
+  if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height) || width <= 0 || height <= 0) {
+    throw new Error("custom --resolution WIDTH and HEIGHT must be positive integers");
   }
   return { name: `${width}x${height}`, width, height };
 };
@@ -218,9 +218,9 @@ const activeRect = async (page: Page): Promise<{ x: number; y: number; width: nu
     return await page.evaluate(() => {
       const el = document.activeElement;
       if (!(el instanceof HTMLElement)) return undefined;
-      const rect = el.getBoundingClientRect();
-      if (!rect.width || !rect.height) return undefined;
-      return { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
+      const r = el.getBoundingClientRect();
+      if (!r.width || !r.height) return undefined;
+      return { x: r.x, y: r.y, width: r.width, height: r.height };
     });
   } catch (error) {
     if (navigationRace(error)) return undefined;
