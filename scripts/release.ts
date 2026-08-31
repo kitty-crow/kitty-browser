@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 
-import { mkdir, rm, copyFile } from "node:fs/promises";
-import { resolve, join } from "node:path";
+import { chmod, copyFile, mkdir, rm } from "node:fs/promises";
+import { dirname, join, resolve } from "node:path";
 
 interface ReleaseOptions {
   tag?: string;
@@ -15,82 +15,94 @@ interface ReleaseTarget {
   readonly id: string;
   readonly os: "linux" | "darwin" | "windows";
   readonly arch: "x64" | "arm64";
-  readonly libc?: "glibc" | "musl";
   readonly bunTarget: Bun.Build.CompileTarget;
-  readonly filename: string;
+  readonly browserArchive: string;
+  readonly browserArch: "x64" | "arm64";
+  readonly browserExecutable: readonly string[];
 }
 
-interface BuiltAsset extends ReleaseTarget {
+interface ChromiumInfo {
+  readonly revision: string;
+  readonly browserVersion: string;
+}
+
+interface BuiltBundle extends ReleaseTarget {
+  readonly archiveFilename: string;
   readonly bytes: number;
   readonly sha256: string;
 }
 
 const ROOT = resolve(import.meta.dir, "..");
-const OUT = join(ROOT, "dist", "release");
+const DIST = join(ROOT, "dist");
+const OUT = join(DIST, "release");
+const STAGE = join(OUT, ".stage");
+const BUILD = join(OUT, ".build");
+const CHROMIUM_CACHE = join(DIST, ".chromium-cache");
 const PACKAGE_PATH = join(ROOT, "package.json");
+const BROWSERS_JSON = join(ROOT, "node_modules", "playwright-core", "browsers.json");
 const MIN_BUN_MAJOR = 1;
 const MIN_BUN_MINOR = 4;
+
+const PLAYWRIGHT_CDN_MIRRORS = [
+  "https://cdn.playwright.dev/dbazure/download/playwright",
+  "https://playwright.download.prss.microsoft.com/dbazure/download/playwright",
+  "https://cdn.playwright.dev",
+] as const;
 
 const TARGETS: readonly ReleaseTarget[] = [
   {
     id: "linux-x64",
     os: "linux",
     arch: "x64",
-    libc: "glibc",
     bunTarget: "bun-linux-x64-baseline",
-    filename: "kitty-browser-linux-x64",
+    browserArchive: "chromium-linux.zip",
+    browserArch: "x64",
+    browserExecutable: ["chrome-linux", "chrome"],
   },
   {
     id: "linux-arm64",
     os: "linux",
     arch: "arm64",
-    libc: "glibc",
     bunTarget: "bun-linux-arm64",
-    filename: "kitty-browser-linux-arm64",
-  },
-  {
-    id: "linux-x64-musl",
-    os: "linux",
-    arch: "x64",
-    libc: "musl",
-    bunTarget: "bun-linux-x64-musl",
-    filename: "kitty-browser-linux-x64-musl",
-  },
-  {
-    id: "linux-arm64-musl",
-    os: "linux",
-    arch: "arm64",
-    libc: "musl",
-    bunTarget: "bun-linux-arm64-musl",
-    filename: "kitty-browser-linux-arm64-musl",
+    browserArchive: "chromium-linux-arm64.zip",
+    browserArch: "arm64",
+    browserExecutable: ["chrome-linux", "chrome"],
   },
   {
     id: "darwin-x64",
     os: "darwin",
     arch: "x64",
     bunTarget: "bun-darwin-x64-baseline",
-    filename: "kitty-browser-darwin-x64",
+    browserArchive: "chromium-mac.zip",
+    browserArch: "x64",
+    browserExecutable: ["chrome-mac", "Chromium.app", "Contents", "MacOS", "Chromium"],
   },
   {
     id: "darwin-arm64",
     os: "darwin",
     arch: "arm64",
     bunTarget: "bun-darwin-arm64",
-    filename: "kitty-browser-darwin-arm64",
+    browserArchive: "chromium-mac-arm64.zip",
+    browserArch: "arm64",
+    browserExecutable: ["chrome-mac", "Chromium.app", "Contents", "MacOS", "Chromium"],
   },
   {
     id: "windows-x64",
     os: "windows",
     arch: "x64",
     bunTarget: "bun-windows-x64-baseline",
-    filename: "kitty-browser-windows-x64.exe",
+    browserArchive: "chromium-win64.zip",
+    browserArch: "x64",
+    browserExecutable: ["chrome-win", "chrome.exe"],
   },
   {
     id: "windows-arm64",
     os: "windows",
     arch: "arm64",
     bunTarget: "bun-windows-arm64",
-    filename: "kitty-browser-windows-arm64.exe",
+    browserArchive: "chromium-win64.zip",
+    browserArch: "x64",
+    browserExecutable: ["chrome-win", "chrome.exe"],
   },
 ];
 
@@ -104,15 +116,17 @@ Options:
   --tag <tag>       Release tag; default v<package.json version>
   --draft           Create a draft GitHub Release
   --prerelease      Mark a newly-created release as a prerelease
-  --build-only      Build artifacts and manifest without uploading
+  --build-only      Build bundles and manifest without uploading
   --allow-dirty     Permit tracked working-tree changes
   -h, --help        Show this help
 
 Default output:
   dist/release/
 
-The normal command builds every supported target, writes SHA-256 checksums and a
-machine-readable manifest, then creates/updates the matching GitHub Release using gh.`);
+Each target archive contains the standalone Kitty Browser executable, embedded Bun
+runtime, and the exact full Chromium revision pinned by the installed Playwright version.
+The normal command builds every target, writes SHA-256 checksums and a machine-readable
+manifest, then creates/updates the matching GitHub Release using gh.`);
   process.exit(code);
 };
 
@@ -213,15 +227,65 @@ const sha256File = async (path: string): Promise<string> => {
   return hasher.digest("hex");
 };
 
-const buildTarget = async (target: ReleaseTarget): Promise<BuiltAsset> => {
-  const outfile = join(OUT, target.filename);
-  console.log(`\n==> ${target.id} (${target.bunTarget})`);
+const chromiumInfo = async (): Promise<ChromiumInfo> => {
+  const data = await Bun.file(BROWSERS_JSON).json() as {
+    browsers?: Array<{ name?: string; revision?: string; browserVersion?: string }>;
+  };
+  const chromium = data.browsers?.find((browser) => browser.name === "chromium");
+  if (!chromium?.revision || !chromium.browserVersion) {
+    throw new Error(`could not read Chromium revision/version from ${BROWSERS_JSON}`);
+  }
+  return {
+    revision: chromium.revision,
+    browserVersion: chromium.browserVersion,
+  };
+};
+
+const downloadChromium = async (
+  info: ChromiumInfo,
+  archiveName: string,
+): Promise<string> => {
+  await mkdir(CHROMIUM_CACHE, { recursive: true });
+  const cached = join(CHROMIUM_CACHE, `${info.revision}-${archiveName}`);
+  if (await Bun.file(cached).exists()) return cached;
+
+  const relative = `builds/chromium/${info.revision}/${archiveName}`;
+  const temporary = `${cached}.tmp`;
+  await rm(temporary, { force: true });
+
+  let lastError = "";
+  for (const mirror of PLAYWRIGHT_CDN_MIRRORS) {
+    const url = `${mirror}/${relative}`;
+    console.log(`    downloading ${url}`);
+    try {
+      const response = await fetch(url, { redirect: "follow" });
+      if (!response.ok) {
+        lastError = `${response.status} ${response.statusText}`;
+        continue;
+      }
+      await Bun.write(temporary, response);
+      await rm(cached, { force: true });
+      await Bun.write(cached, Bun.file(temporary));
+      await rm(temporary, { force: true });
+      return cached;
+    } catch (error) {
+      lastError = error instanceof Error ? error.message : String(error);
+    }
+  }
+
+  await rm(temporary, { force: true });
+  throw new Error(`failed to download Playwright Chromium ${archiveName}: ${lastError || "all CDN mirrors failed"}`);
+};
+
+const compileTarget = async (target: ReleaseTarget, executable: string): Promise<void> => {
+  console.log(`\n==> Compiling ${target.id} (${target.bunTarget})`);
+  await mkdir(dirname(executable), { recursive: true });
 
   const result = await Bun.build({
     entrypoints: [join(ROOT, "src", "cli.ts")],
     compile: {
       target: target.bunTarget,
-      outfile,
+      outfile: executable,
       autoloadDotenv: false,
       autoloadBunfig: false,
       autoloadPackageJson: false,
@@ -237,18 +301,78 @@ const buildTarget = async (target: ReleaseTarget): Promise<BuiltAsset> => {
     const diagnostics = result.logs.map((log) => String(log)).join("\n");
     throw new Error(`failed to build ${target.id}${diagnostics ? `\n${diagnostics}` : ""}`);
   }
+};
 
-  const file = Bun.file(outfile);
-  const sha256 = await sha256File(outfile);
-  await Bun.write(`${outfile}.sha256`, `${sha256}  ${target.filename}\n`);
+const buildBundle = async (
+  target: ReleaseTarget,
+  info: ChromiumInfo,
+  version: string,
+  head: string,
+): Promise<BuiltBundle> => {
+  const bundleDir = join(STAGE, target.id);
+  const buildDir = join(BUILD, target.id);
+  const executableName = target.os === "windows" ? "kitty-browser.exe" : "kitty-browser";
+  const builtExecutable = join(buildDir, executableName);
+  const bundledExecutable = join(bundleDir, executableName);
+  const chromiumDir = join(bundleDir, "chromium");
 
-  console.log(`    ${target.filename}`);
-  console.log(`    ${(file.size / 1024 / 1024).toFixed(1)} MiB`);
+  await rm(bundleDir, { recursive: true, force: true });
+  await rm(buildDir, { recursive: true, force: true });
+  await mkdir(bundleDir, { recursive: true });
+  await mkdir(buildDir, { recursive: true });
+  await mkdir(chromiumDir, { recursive: true });
+
+  await compileTarget(target, builtExecutable);
+  await copyFile(builtExecutable, bundledExecutable);
+  if (target.os !== "windows") await chmod(bundledExecutable, 0o755);
+
+  console.log(`    Chromium ${info.browserVersion} revision ${info.revision}`);
+  const chromiumZip = await downloadChromium(info, target.browserArchive);
+  await checked(["unzip", "-q", "-o", chromiumZip, "-d", chromiumDir]);
+
+  const browserExecutable = join(chromiumDir, ...target.browserExecutable);
+  if (!(await Bun.file(browserExecutable).exists())) {
+    throw new Error(`Chromium archive ${target.browserArchive} did not contain ${target.browserExecutable.join("/")}`);
+  }
+  if (target.os !== "windows") await chmod(browserExecutable, 0o755).catch(() => undefined);
+
+  const bundleMetadata = {
+    schemaVersion: 1,
+    name: "kitty-browser",
+    version,
+    commit: head,
+    target: target.id,
+    os: target.os,
+    arch: target.arch,
+    chromium: {
+      revision: info.revision,
+      browserVersion: info.browserVersion,
+      browserArch: target.browserArch,
+      executable: ["chromium", ...target.browserExecutable].join("/"),
+    },
+  };
+  await Bun.write(
+    join(bundleDir, "kitty-browser-bundle.json"),
+    `${JSON.stringify(bundleMetadata, null, 2)}\n`,
+  );
+
+  const archiveFilename = `kitty-browser-${target.id}.tar.gz`;
+  const archivePath = join(OUT, archiveFilename);
+  await rm(archivePath, { force: true });
+  await checked(["tar", "-czf", archivePath, "-C", bundleDir, "."]);
+
+  const archive = Bun.file(archivePath);
+  const sha256 = await sha256File(archivePath);
+  await Bun.write(`${archivePath}.sha256`, `${sha256}  ${archiveFilename}\n`);
+
+  console.log(`    ${archiveFilename}`);
+  console.log(`    ${(archive.size / 1024 / 1024).toFixed(1)} MiB`);
   console.log(`    sha256 ${sha256}`);
 
   return {
     ...target,
-    bytes: file.size,
+    archiveFilename,
+    bytes: archive.size,
     sha256,
   };
 };
@@ -289,21 +413,28 @@ if (submodules.code !== 0 && !options.allowDirty) {
   throw new Error("a vendored submodule has local changes; commit/reset them or pass --allow-dirty");
 }
 
+if (!(await commandExists("unzip"))) throw new Error("unzip is required to assemble Chromium release bundles");
+if (!(await commandExists("tar"))) throw new Error("tar is required to assemble release bundles");
+
 console.log("==> Installing build dependencies");
 await checked([process.execPath, "install"]);
+const chromium = await chromiumInfo();
 
 await rm(OUT, { recursive: true, force: true });
 await mkdir(OUT, { recursive: true });
+await mkdir(STAGE, { recursive: true });
+await mkdir(BUILD, { recursive: true });
 
 console.log(`==> Building Kitty Browser ${tag}`);
 console.log(`    commit ${head}`);
 console.log(`    Bun ${Bun.version}`);
+console.log(`    Chromium ${chromium.browserVersion} (Playwright revision ${chromium.revision})`);
 
-const assets: BuiltAsset[] = [];
-for (const target of TARGETS) assets.push(await buildTarget(target));
+const bundles: BuiltBundle[] = [];
+for (const target of TARGETS) bundles.push(await buildBundle(target, chromium, version, head));
 
-const checksumLines = assets
-  .map((asset) => `${asset.sha256}  ${asset.filename}`)
+const checksumLines = bundles
+  .map((bundle) => `${bundle.sha256}  ${bundle.archiveFilename}`)
   .join("\n");
 await Bun.write(join(OUT, "SHA256SUMS"), `${checksumLines}\n`);
 
@@ -314,7 +445,7 @@ if (!options.buildOnly) {
 }
 
 const manifest = {
-  schemaVersion: 1,
+  schemaVersion: 2,
   name: "kitty-browser",
   version,
   tag,
@@ -323,18 +454,24 @@ const manifest = {
   bunVersion: Bun.version,
   ...(repository ? { repository } : {}),
   chromium: {
-    bundled: false,
-    strategy: "managed-runtime-planned",
+    bundled: true,
+    source: "playwright",
+    revision: chromium.revision,
+    browserVersion: chromium.browserVersion,
   },
-  binaries: assets.map((asset) => ({
-    id: asset.id,
-    os: asset.os,
-    arch: asset.arch,
-    ...(asset.libc ? { libc: asset.libc } : {}),
-    bunTarget: asset.bunTarget,
-    filename: asset.filename,
-    bytes: asset.bytes,
-    sha256: asset.sha256,
+  bundles: bundles.map((bundle) => ({
+    id: bundle.id,
+    os: bundle.os,
+    arch: bundle.arch,
+    bunTarget: bundle.bunTarget,
+    archive: bundle.archiveFilename,
+    bytes: bundle.bytes,
+    sha256: bundle.sha256,
+    chromium: {
+      browserArch: bundle.browserArch,
+      archive: bundle.browserArchive,
+      executable: ["chromium", ...bundle.browserExecutable].join("/"),
+    },
   })),
 };
 await Bun.write(
@@ -347,9 +484,12 @@ for (const installer of ["kitty-browser.sh", "kitty-browser.ps1"]) {
 }
 
 const notesPath = join(OUT, "release-notes.md");
-await Bun.write(notesPath, `# Kitty Browser ${tag}\n\nStandalone Bun executables for supported 64-bit Linux, macOS and Windows targets.\n\n- Commit: \`${head}\`\n- Bun: \`${Bun.version}\`\n- SHA-256 checksums: \`SHA256SUMS\` and per-binary \`.sha256\` assets\n- Machine-readable selector data: \`kitty-browser-manifest.json\`\n\nChromium is intentionally not embedded in these first-stage executable assets yet; the manifest reserves the runtime strategy field for the managed Chromium bootstrap layer.\n`);
+await Bun.write(notesPath, `# Kitty Browser ${tag}\n\nSelf-contained Kitty Browser bundles for supported 64-bit Linux, macOS and Windows targets. Each archive includes the standalone Kitty Browser executable, Bun runtime and full Playwright Chromium ${chromium.browserVersion} (revision ${chromium.revision}).\n\n- Commit: \`${head}\`\n- Bun: \`${Bun.version}\`\n- Chromium: \`${chromium.browserVersion}\` / Playwright revision \`${chromium.revision}\`\n- SHA-256 checksums: \`SHA256SUMS\` and per-bundle \`.sha256\` assets\n- Machine-readable selector data: \`kitty-browser-manifest.json\`\n\nWindows ARM64 uses a native ARM64 Kitty Browser executable with Playwright's supported win64 Chromium build. Linux bundles target glibc systems; Playwright Chromium is not a musl/Alpine build.\n`);
 
-console.log(`\n==> Artifacts ready in ${OUT}`);
+await rm(STAGE, { recursive: true, force: true });
+await rm(BUILD, { recursive: true, force: true });
+
+console.log(`\n==> Bundles ready in ${OUT}`);
 
 if (options.buildOnly) {
   console.log("==> Build-only mode; skipping GitHub upload");
@@ -389,9 +529,9 @@ if (!releaseExists) {
 }
 
 const uploadPaths = [
-  ...assets.flatMap((asset) => [
-    join(OUT, asset.filename),
-    join(OUT, `${asset.filename}.sha256`),
+  ...bundles.flatMap((bundle) => [
+    join(OUT, bundle.archiveFilename),
+    join(OUT, `${bundle.archiveFilename}.sha256`),
   ]),
   join(OUT, "SHA256SUMS"),
   join(OUT, "kitty-browser-manifest.json"),
