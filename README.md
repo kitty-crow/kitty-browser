@@ -6,15 +6,25 @@ Kitty Browser owns browser runtime behaviour independently of any agent or model
 
 It is consumed by `kitty-crow/openAI-pilot-headed` as a pinned vendored submodule. Agent schemas, OpenAI Pilot bridges, agent overlays, planning and model-facing behaviour do not belong here.
 
-## CLI and renderers
+## Renderers
 
-The package entrypoint is the browser CLI:
+Kitty Browser has three renderers:
+
+- `unicode`: terminal-native full-colour Unicode Braille with literal DOM text projection. It deliberately does not accept `--resolution`.
+- `sixel`: Chromium raster frames over SIXEL.
+- `kitty`: Chromium PNG frames over the Kitty graphics protocol.
+
+`--render auto` is the default and probes the terminal, selecting Kitty graphics, then SIXEL, then Unicode as the portable fallback. `terminal:capabilities` reports the terminal capabilities used by that selection logic.
+
+## Unified CLI
+
+Use the package entry point directly:
 
 ```bash
 bun . https://example.com
 ```
 
-Select a renderer with `--render`:
+Renderer selection is an argument rather than a separate package script:
 
 ```bash
 bun . https://example.com --render auto
@@ -23,15 +33,9 @@ bun . https://example.com --render sixel --resolution 960x540
 bun . https://example.com --render kitty --resolution 720p
 ```
 
-`--render auto` is the default. Auto probes the terminal and selects Kitty graphics first, then SIXEL, then Unicode as the portable fallback.
+`--render auto` is the default. `bun run terminal -- ...` remains as a compatibility alias.
 
-The three renderers are:
-
-- `unicode`: terminal-native full-colour Unicode Braille with literal DOM text projection. It deliberately does not accept `--resolution`.
-- `sixel`: Chromium raster frames over SIXEL.
-- `kitty`: Chromium PNG frames over the Kitty graphics protocol.
-
-`bun run terminal -- ...` remains a compatibility alias for `bun . ...`. Bare `bun run` itself is reserved by Bun and cannot be reassigned by this package. `bun run terminal:capabilities` reports the terminal capabilities used by auto-selection.
+The capture rate defaults to 12 FPS. `--fps` accepts integer values from 1 through 24 inclusive; values outside that range are rejected.
 
 ## Browser sessions and persistence
 
@@ -95,6 +99,8 @@ The check uses the public suffix list, including private suffixes, rather than a
 
 Strict mode applies to main-frame clicks, redirects, form submissions, JavaScript navigation and URLs entered into the terminal navigation bar. Third-party subresources are not blocked, so pages may still load scripts, styles, images, APIs and other resources from external hosts.
 
+When a cross-domain top-level navigation is blocked, Chromium's normal `chrome-error` page is left visible for about two seconds. Kitty Browser then automatically returns that tab to the exact launch/home URL. A later blocked attempt replaces any earlier pending return timer rather than stacking multiple return navigations.
+
 ## Setup
 
 ```bash
@@ -109,11 +115,11 @@ On headless Linux hosts, graphical renderers that use real headed Chromium boots
 
 ```bash
 bun . https://example.com --session default
-bun . https://example.com --render unicode --fps 4 --session personal
-bun . https://example.com --render sixel --resolution 720p --fps 4 --session testing
-bun . https://example.com --render kitty --resolution 720p --fps 24 --session work
+bun . https://example.com --render unicode --session personal
+bun . https://example.com --render sixel --resolution 720p --session testing
+bun . https://example.com --render kitty --resolution 720p --session work
 bun . https://example.com --render kitty --no-status
-bun . https://app.example.co.uk --render auto --session locked --strict
+bun . https://example.com --strict
 ```
 
 The Unicode renderer always derives its Chromium viewport from the terminal text grid. SIXEL and Kitty expose arbitrary positive integer `WIDTHxHEIGHT` viewport resolutions as well as named presets.
@@ -125,7 +131,6 @@ The render loops are sequential and do not queue stale frames. Mouse, keyboard, 
 ```text
 kitty-browser
   ├─ Playwright / Chromium
-  ├─ tldts / public suffix parsing
   └─ vendor/unicode-art-studio
 
 openAI-pilot-headed
