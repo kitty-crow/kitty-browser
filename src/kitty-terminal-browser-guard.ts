@@ -1,5 +1,9 @@
 #!/usr/bin/env bun
 import { consumeBrowserSessionArg } from "./terminal-session.ts";
+import {
+  autoResolutionEnabled,
+  freezeTerminalGeometry,
+} from "./terminal-auto-resolution.ts";
 
 consumeBrowserSessionArg();
 
@@ -44,6 +48,7 @@ const ensureVirtualDisplay = async (): Promise<void> => {
 };
 
 await ensureVirtualDisplay();
+if (autoResolutionEnabled()) freezeTerminalGeometry();
 
 const environmentSaysKitty = (): boolean =>
   /kitty/iu.test(term)
