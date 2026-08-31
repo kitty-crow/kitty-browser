@@ -65,6 +65,8 @@ const NATIVE_CELL_HEIGHT = 16;
 const MAX_TEXT_GLYPHS = 30_000;
 const MIN_WHEEL_PIXELS = 48;
 const WHEEL_CELL_MULTIPLIER = 3;
+const INPUT_DRAIN_QUIET_MS = 30;
+const INPUT_DRAIN_MAX_MS = 250;
 
 const PRESETS = new Map<string, readonly [number, number]>([
   ["800x600", [800, 600]],
@@ -250,6 +252,14 @@ const navigationRace = (error: unknown): boolean => {
     || message.includes("Frame was detached");
 };
 
+const targetClosed = (error: unknown): boolean => {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.includes("Target page, context or browser has been closed")
+    || message.includes("Browser has been closed")
+    || message.includes("Target closed")
+    || message.includes("Page closed");
+};
+
 const activeRect = async (page: Page): Promise<{ x: number; y: number; width: number; height: number } | undefined> => {
   try {
     return await page.evaluate(() => {
@@ -433,6 +443,8 @@ await page.setViewportSize({ width: geometry.browserWidth, height: geometry.brow
 await page.goto(args.url, { waitUntil: "domcontentloaded", timeout: 30_000 });
 
 let running = true;
+let shuttingDown = false;
+let cleanedUp = false;
 let inputMode = false;
 let cursorX = Math.min(Math.floor(geometry.columns / 2), geometry.logicalColumns - 1);
 let cursorY = Math.min(Math.floor(geometry.rows / 2), geometry.logicalRows - 1);
@@ -446,7 +458,20 @@ let resizePending = false;
 let lastStatus = "";
 let swipe: SwipeState | undefined;
 let auxiliaryButton: MouseButton | undefined;
+let inputQueue: Promise<void> = Promise.resolve();
 const mouseDecoder = new TerminalMouseDecoder();
+
+const beginShutdown = (): void => {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  running = false;
+  inputMode = false;
+  swipe = undefined;
+  auxiliaryButton = undefined;
+  // Stop the terminal producing any new SGR mouse reports immediately. Cleanup
+  // repeats this after leaving the alternate screen as a defensive reset.
+  process.stdout.write(MOUSE_DISABLE);
+};
 
 const ensureCursorVisible = (): void => {
   if (cursorX < viewX) viewX = cursorX;
@@ -458,7 +483,7 @@ const ensureCursorVisible = (): void => {
 };
 
 page.on("framenavigated", (frameHandle) => {
-  if (frameHandle !== page.mainFrame()) return;
+  if (frameHandle !== page.mainFrame() || shuttingDown) return;
   inputMode = false;
   swipe = undefined;
   auxiliaryButton = undefined;
@@ -470,6 +495,8 @@ page.on("framenavigated", (frameHandle) => {
   painted = [];
   lastStatus = "";
 });
+page.on("close", beginShutdown);
+browser.on("disconnected", beginShutdown);
 
 const pointerHighlighted = (): boolean => Math.floor(Math.max(0, frame - 1) / args.fps) % 2 === 0;
 
@@ -483,7 +510,7 @@ const status = (): string => {
 };
 
 const paintStatus = (full = false): void => {
-  if (!args.status) return;
+  if (!args.status || shuttingDown) return;
   const value = status();
   if (!full && value === lastStatus) return;
   process.stdout.write(`${at(0, geometry.rows)}\x1b[7m${value}\x1b[0m`);
@@ -499,7 +526,7 @@ const displayCell = (terminalX: number, terminalY: number): Cell => {
 };
 
 const paint = (full = false): void => {
-  if (!baseCells.length) return;
+  if (!baseCells.length || shuttingDown) return;
   const next: Cell[] = new Array(geometry.columns * geometry.rows);
   let output = "";
 
@@ -524,11 +551,13 @@ const browserPoint = (logicalX: number, logicalY: number) => ({
 });
 
 const hoverPointer = async (): Promise<void> => {
+  if (shuttingDown) return;
   const point = browserPoint(cursorX, cursorY);
   await page.mouse.move(point.x, point.y);
 };
 
 const movePointer = async (dx: number, dy: number): Promise<void> => {
+  if (shuttingDown) return;
   const nextX = cursorX + dx;
   const nextY = cursorY + dy;
 
@@ -545,8 +574,9 @@ const movePointer = async (dx: number, dy: number): Promise<void> => {
 };
 
 const followFocus = async (): Promise<void> => {
+  if (shuttingDown) return;
   const rect = await activeRect(page);
-  if (!rect) return;
+  if (!rect || shuttingDown) return;
   cursorX = clamp(Math.floor((rect.x + rect.width / 2) / geometry.cellWidth), 0, geometry.logicalColumns - 1);
   cursorY = clamp(Math.floor((rect.y + rect.height / 2) / geometry.cellHeight), 0, geometry.logicalRows - 1);
   ensureCursorVisible();
@@ -555,15 +585,17 @@ const followFocus = async (): Promise<void> => {
 };
 
 const activate = async (): Promise<void> => {
+  if (shuttingDown) return;
   const point = browserPoint(cursorX, cursorY);
   const editable = await editableAt(page, point.x, point.y);
+  if (shuttingDown) return;
   await page.mouse.click(point.x, point.y);
   inputMode = editable;
   paintStatus(true);
 };
 
 const pointFromMouse = async (x: number, y: number): Promise<boolean> => {
-  if (x < 0 || x >= geometry.columns || y < 0 || y >= geometry.rows) return false;
+  if (shuttingDown || x < 0 || x >= geometry.columns || y < 0 || y >= geometry.rows) return false;
   cursorX = clamp(viewX + x, 0, geometry.logicalColumns - 1);
   cursorY = clamp(viewY + y, 0, geometry.logicalRows - 1);
   await hoverPointer();
@@ -572,7 +604,7 @@ const pointFromMouse = async (x: number, y: number): Promise<boolean> => {
 };
 
 const handleMouse = async (event: TerminalMouseEvent): Promise<void> => {
-  if (!(await pointFromMouse(event.x, event.y))) return;
+  if (shuttingDown || !(await pointFromMouse(event.x, event.y))) return;
 
   if (event.kind === "wheel") {
     swipe = undefined;
@@ -619,7 +651,7 @@ const handleMouse = async (event: TerminalMouseEvent): Promise<void> => {
 };
 
 const applyResize = async (): Promise<void> => {
-  if (!resizePending) return;
+  if (!resizePending || shuttingDown) return;
   resizePending = false;
   const previous = geometry;
   geometry = geometryFor(terminalSize(args.status), args.resolution);
@@ -638,10 +670,13 @@ const applyResize = async (): Promise<void> => {
 };
 
 const capture = async (): Promise<void> => {
+  if (shuttingDown) return;
   try {
     await applyResize();
+    if (shuttingDown) return;
     const screenshot = await page.screenshot({ type: "png" });
     const textCells = await visibleTextCells(page, geometry);
+    if (shuttingDown) return;
     const png = PNG.sync.read(screenshot);
     const art = makeArt(
       { width: png.width, height: png.height, data: png.data },
@@ -664,8 +699,12 @@ const capture = async (): Promise<void> => {
     paint(forceFull);
     forceFull = false;
   } catch (error) {
+    if (targetClosed(error)) {
+      beginShutdown();
+      return;
+    }
     if (navigationRace(error)) {
-      await page.waitForLoadState("domcontentloaded", { timeout: 750 }).catch(() => undefined);
+      if (!shuttingDown) await page.waitForLoadState("domcontentloaded", { timeout: 750 }).catch(() => undefined);
       return;
     }
     throw error;
@@ -674,9 +713,10 @@ const capture = async (): Promise<void> => {
 
 const key = async (text: string): Promise<void> => {
   if (text === "\x03") {
-    running = false;
+    beginShutdown();
     return;
   }
+  if (shuttingDown) return;
 
   if (inputMode) {
     if (text === "\x1b") {
@@ -715,23 +755,20 @@ const key = async (text: string): Promise<void> => {
   if (text === "\x1b[6~") await page.mouse.wheel(0, Math.round(geometry.browserHeight * 0.8));
 };
 
-const cleanup = async (): Promise<void> => {
-  process.stdin.setRawMode(false);
-  process.stdin.pause();
-  process.stdout.write(`${MOUSE_DISABLE}\x1b[0m\x1b[?7h\x1b[?25h\x1b[?1049l`);
-  await browser.close();
-};
-
-process.stdout.write(`\x1b[?1049h\x1b[?25l\x1b[?7l${MOUSE_ENABLE}\x1b[2J`);
-process.stdin.setEncoding("utf8");
-process.stdin.setRawMode(true);
-process.stdin.resume();
-let inputQueue = Promise.resolve();
-process.stdin.on("data", (chunk: string) => {
+const onStdinData = (chunk: string): void => {
+  if (shuttingDown) return;
   for (const input of mouseDecoder.push(chunk)) {
     inputQueue = inputQueue
-      .then(() => input.kind === "mouse" ? handleMouse(input.event) : key(input.text))
+      .then(async () => {
+        if (shuttingDown) return;
+        if (input.kind === "mouse") await handleMouse(input.event);
+        else await key(input.text);
+      })
       .catch((error) => {
+        if (shuttingDown || targetClosed(error)) {
+          beginShutdown();
+          return;
+        }
         inputMode = false;
         swipe = undefined;
         auxiliaryButton = undefined;
@@ -739,14 +776,59 @@ process.stdin.on("data", (chunk: string) => {
         process.stderr.write(`\ninput error: ${error instanceof Error ? error.message : String(error)}\n`);
       });
   }
-});
-process.stdout.on("resize", () => { resizePending = true; });
+};
+
+const drainPendingInput = async (): Promise<void> => {
+  process.stdin.off("data", onStdinData);
+  let lastData = performance.now();
+  const discard = (): void => { lastData = performance.now(); };
+  process.stdin.on("data", discard);
+  process.stdin.resume();
+  const started = performance.now();
+  while (performance.now() - started < INPUT_DRAIN_MAX_MS) {
+    if (performance.now() - lastData >= INPUT_DRAIN_QUIET_MS) break;
+    await Bun.sleep(10);
+  }
+  process.stdin.pause();
+  process.stdin.off("data", discard);
+};
+
+const cleanup = async (): Promise<void> => {
+  if (cleanedUp) return;
+  cleanedUp = true;
+  beginShutdown();
+
+  // Let any operation that was already in flight finish while the browser still
+  // exists. Everything queued behind shutdown becomes a no-op.
+  await inputQueue.catch(() => undefined);
+
+  // Mouse reports can already be travelling through the PTY/SSH stream when
+  // tracking is disabled. Consume them here so they cannot become shell input.
+  await drainPendingInput();
+
+  if (process.stdin.isTTY) process.stdin.setRawMode(false);
+  process.stdin.pause();
+  if (browser.isConnected()) await browser.close().catch(() => undefined);
+
+  // Disable tracking on both sides of the alternate-screen transition. Some
+  // terminals restore private modes with the primary screen; this guarantees
+  // the shell always receives an ordinary TTY.
+  process.stdout.write(`${MOUSE_DISABLE}\x1b[0m\x1b[?7h\x1b[?25h\x1b[?1049l${MOUSE_DISABLE}\x1b[0m\x1b[?7h\x1b[?25h`);
+};
+
+process.stdout.write(`\x1b[?1049h\x1b[?25l\x1b[?7l${MOUSE_ENABLE}\x1b[2J`);
+process.stdin.setEncoding("utf8");
+process.stdin.setRawMode(true);
+process.stdin.resume();
+process.stdin.on("data", onStdinData);
+process.stdout.on("resize", () => { if (!shuttingDown) resizePending = true; });
 
 try {
   const interval = 1000 / args.fps;
   while (running) {
     const started = performance.now();
     await capture();
+    if (!running) break;
     const remaining = interval - (performance.now() - started);
     if (remaining > 0) await Bun.sleep(remaining);
   }
