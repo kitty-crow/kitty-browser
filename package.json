@@ -3,12 +3,11 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "main": "src/cli.ts",
+  "module": "src/cli.ts",
   "description": "Standalone real-Chromium terminal browser with Unicode, SIXEL, and Kitty graphics renderers.",
   "scripts": {
-    "terminal": "bun src/terminal-auto.ts",
-    "terminal:unicode": "bun src/unicode-terminal-browser.ts",
-    "terminal:sixel": "bun src/sixel-terminal-browser-guard.ts",
-    "terminal:kitty": "bun src/kitty-terminal-browser-guard.ts",
+    "terminal": "bun src/cli.ts",
     "terminal:capabilities": "bun src/terminal-capabilities.ts"
   },
   "dependencies": {
