@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 import { consumeBrowserSessionArg } from "./terminal-session.ts";
 import {
-  freezeTerminalGeometry,
+  captureTerminalGeometry,
   setAutoResolutionEnabled,
 } from "./terminal-auto-resolution.ts";
 
@@ -188,6 +188,7 @@ consumeBrowserSessionArg();
 consumeStrictArg();
 validateAndDefaultFpsArg();
 const autoResolution = configureResolutionMode(renderer);
+if (autoResolution) captureTerminalGeometry();
 
 const homeUrl = findLaunchUrl();
 if (!homeUrl) help(2);
@@ -203,12 +204,10 @@ switch (renderer) {
     await import("./unicode-terminal-browser.ts");
     break;
   case "sixel":
-    if (autoResolution) freezeTerminalGeometry();
     process.env.OPENAI_PILOT_RENDERER = "sixel";
     await import("./sixel-terminal-browser-guard.ts");
     break;
   case "kitty":
-    if (autoResolution) freezeTerminalGeometry();
     process.env.OPENAI_PILOT_RENDERER = "kitty";
     await import("./kitty-terminal-browser-guard.ts");
     break;
