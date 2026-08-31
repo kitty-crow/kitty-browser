@@ -31,7 +31,7 @@ The three renderers are:
 - `sixel`: Chromium raster frames over SIXEL.
 - `kitty`: Chromium PNG frames over the Kitty graphics protocol.
 
-`bun run terminal -- ...` remains a compatibility alias for `bun . ...`. Bare `bun run` itself is a Bun CLI command that lists package scripts and cannot be reassigned by this package. `bun run terminal:capabilities` reports the terminal capabilities used by auto-selection.
+`bun run terminal -- ...` remains a compatibility alias for `bun . ...`. Bare `bun run` itself is reserved by Bun and cannot be reassigned by this package. `bun run terminal:capabilities` reports the terminal capabilities used by auto-selection.
 
 ## Browser sessions and persistence
 
@@ -76,6 +76,25 @@ When the bottom status bar is enabled it also acts as the browser navigation bar
 
 `--no-status` hides the bar and therefore also hides these mouse navigation controls.
 
+Two global keyboard navigation shortcuts are available even when the status bar is hidden:
+
+- `Backspace` goes to the previous page only when Chromium's currently focused webpage element is not an editable input, textarea or contenteditable element. If an editable webpage element is focused, Backspace is sent to Chromium instead.
+- `Ctrl+H` returns directly to the original URL supplied when Kitty Browser was launched.
+
+## Strict navigation
+
+Use `--strict` to confine top-level browsing to the launch URL's registrable domain:
+
+```bash
+bun . https://app.example.co.uk --strict
+```
+
+Subdomains of the same registrable domain remain available, so `app.example.co.uk`, `www.example.co.uk` and `example.co.uk` can navigate between one another. Navigation to a different registrable domain is blocked.
+
+The check uses the public suffix list, including private suffixes, rather than assuming a domain is always the final two labels. This correctly handles names such as `example.co.uk` and hosted-domain boundaries such as `name.github.io`.
+
+Strict mode applies to main-frame clicks, redirects, form submissions, JavaScript navigation and URLs entered into the terminal navigation bar. Third-party subresources are not blocked, so pages may still load scripts, styles, images, APIs and other resources from external hosts.
+
 ## Setup
 
 ```bash
@@ -94,6 +113,7 @@ bun . https://example.com --render unicode --fps 4 --session personal
 bun . https://example.com --render sixel --resolution 720p --fps 4 --session testing
 bun . https://example.com --render kitty --resolution 720p --fps 24 --session work
 bun . https://example.com --render kitty --no-status
+bun . https://app.example.co.uk --render auto --session locked --strict
 ```
 
 The Unicode renderer always derives its Chromium viewport from the terminal text grid. SIXEL and Kitty expose arbitrary positive integer `WIDTHxHEIGHT` viewport resolutions as well as named presets.
@@ -105,6 +125,7 @@ The render loops are sequential and do not queue stale frames. Mouse, keyboard, 
 ```text
 kitty-browser
   ├─ Playwright / Chromium
+  ├─ tldts / public suffix parsing
   └─ vendor/unicode-art-studio
 
 openAI-pilot-headed
