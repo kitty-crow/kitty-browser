@@ -2,15 +2,20 @@ import { chromium, type Browser, type BrowserContext, type Page } from "playwrig
 import { mkdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { browserSessionId } from "./terminal-session.ts";
 
-const DEFAULT_PROFILE_DIR = join(homedir(), ".local", "share", "kitty-browser", "chromium-profile");
+const DEFAULT_PROFILE_ROOT = join(homedir(), ".local", "share", "kitty-browser", "sessions");
 
-export const profileDirectory = (): string =>
-  process.env.KITTY_BROWSER_PROFILE_DIR?.trim() || DEFAULT_PROFILE_DIR;
+export const profileRoot = (): string =>
+  process.env.KITTY_BROWSER_PROFILE_ROOT?.trim() || DEFAULT_PROFILE_ROOT;
+
+export const profileDirectory = (session = browserSessionId()): string =>
+  join(profileRoot(), session);
 
 export interface PersistentBrowser {
   readonly context: BrowserContext;
   readonly profileDir: string;
+  readonly session: string;
   newPage(): Promise<Page>;
   close(): Promise<void>;
   isConnected(): boolean;
@@ -25,7 +30,8 @@ export interface PersistentBrowserOptions {
 export const launchPersistentBrowser = async (
   options: PersistentBrowserOptions,
 ): Promise<PersistentBrowser> => {
-  const profileDir = profileDirectory();
+  const session = browserSessionId();
+  const profileDir = profileDirectory(session);
   await mkdir(profileDir, { recursive: true });
 
   const context = await chromium.launchPersistentContext(profileDir, {
@@ -41,6 +47,7 @@ export const launchPersistentBrowser = async (
   return {
     context,
     profileDir,
+    session,
     async newPage(): Promise<Page> {
       if (!claimedInitialPage) {
         claimedInitialPage = true;
