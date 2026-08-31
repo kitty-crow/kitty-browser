@@ -86,6 +86,6 @@ if (probe.kitty) {
   process.env.KITTY_BROWSER_FORCE_SIXEL = "1";
   await import("./sixel-terminal-browser-guard.ts");
 } else {
-  process.env.OPENAI_PILOT_RENDERER = "braille";
-  await import("./terminal-browser.ts");
+  process.env.OPENAI_PILOT_RENDERER = "unicode";
+  await import("./unicode-terminal-browser.ts");
 }
