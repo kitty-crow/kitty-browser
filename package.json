@@ -3,10 +3,11 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Standalone real-Chromium terminal browser with Braille and Kitty graphics renderers.",
+  "description": "Standalone real-Chromium terminal browser with Braille, SIXEL, and Kitty graphics renderers.",
   "scripts": {
     "terminal": "bun src/terminal-auto.ts",
     "terminal:prototype": "bun src/terminal-browser.ts",
+    "terminal:sixel": "bun src/sixel-terminal-browser-guard.ts",
     "terminal:kitty": "bun src/kitty-terminal-browser-guard.ts",
     "terminal:capabilities": "bun src/terminal-capabilities.ts"
   },
