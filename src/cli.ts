@@ -6,6 +6,8 @@ type Renderer = "auto" | "unicode" | "sixel" | "kitty";
 const RENDERERS = new Set<Renderer>(["auto", "unicode", "sixel", "kitty"]);
 const STRICT_ENV = "KITTY_BROWSER_STRICT";
 const HOME_ENV = "KITTY_BROWSER_HOME_URL";
+const MIN_FPS = 1;
+const MAX_FPS = 24;
 
 const help = (code = 0): never => {
   console.log(`Kitty Browser
@@ -18,7 +20,7 @@ Options:
   --render <mode>            auto, unicode, sixel, or kitty; default auto
   --session <id>             Persistent Chromium session/profile; default "default"
   --strict                   Restrict top-level navigation to the launch URL's registrable domain
-  --fps <n>                  Capture rate, integer 1-60; default 1
+  --fps <n>                  Capture rate, integer 1-24; default 1
   --resolution <mode>        SIXEL/Kitty only: named preset or WIDTHxHEIGHT
   --no-status                Hide the bottom navigation/status bar
   -h, --help                 Show this help
@@ -92,6 +94,20 @@ const consumeStrictArg = (argv = process.argv): boolean => {
   return strict;
 };
 
+const validateFpsArg = (argv = process.argv): void => {
+  for (let i = 2; i < argv.length; i += 1) {
+    if (argv[i] !== "--fps") continue;
+    const raw = argv[i + 1];
+    if (!raw) throw new Error("--fps requires an integer value");
+    if (!/^\d+$/u.test(raw)) throw new Error(`--fps must be an integer from ${MIN_FPS} to ${MAX_FPS}`);
+    const fps = Number.parseInt(raw, 10);
+    if (!Number.isSafeInteger(fps) || fps < MIN_FPS || fps > MAX_FPS) {
+      throw new Error(`--fps must be an integer from ${MIN_FPS} to ${MAX_FPS}`);
+    }
+    i += 1;
+  }
+};
+
 const findLaunchUrl = (argv = process.argv): string | undefined => {
   const takesValue = new Set(["--fps", "--resolution", "-r"]);
   for (let i = 2; i < argv.length; i += 1) {
@@ -113,6 +129,7 @@ if (process.argv.includes("--help") || process.argv.includes("-h")) help(0);
 const renderer = consumeRendererArg();
 consumeBrowserSessionArg();
 consumeStrictArg();
+validateFpsArg();
 
 const homeUrl = findLaunchUrl();
 if (!homeUrl) help(2);
