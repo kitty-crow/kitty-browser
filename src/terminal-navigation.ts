@@ -1,6 +1,5 @@
 import type { Page } from "playwright";
-import { setTerminalUrlEditing } from "./browser-shortcuts.ts";
-import { strictNavigationAllows } from "./navigation-policy.ts";
+import { safeGoBack, setTerminalUrlEditing } from "./browser-shortcuts.ts";
 
 const CONTROLS = " [<] [R] ";
 const BACK_START = 1;
@@ -96,7 +95,7 @@ export class TerminalNavigationBar {
 
     if (x >= BACK_START && x < BACK_END) {
       this.cancel();
-      await this.#page.goBack({ waitUntil: "domcontentloaded", timeout: 30_000 }).catch(() => null);
+      await safeGoBack(this.#page);
       return true;
     }
 
@@ -132,7 +131,6 @@ export class TerminalNavigationBar {
     if (text === "\r") {
       const target = normaliseUrl(this.#value);
       this.cancel();
-      if (!strictNavigationAllows(target)) return true;
       await this.#page.goto(target, { waitUntil: "domcontentloaded", timeout: 30_000 }).catch(() => null);
       return true;
     }
