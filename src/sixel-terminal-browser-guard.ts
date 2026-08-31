@@ -1,4 +1,7 @@
 #!/usr/bin/env bun
+import { consumeBrowserSessionArg } from "./terminal-session.ts";
+
+consumeBrowserSessionArg();
 
 const forced = process.env.KITTY_BROWSER_FORCE_SIXEL === "1"
   || process.env.OPENAI_PILOT_FORCE_SIXEL === "1";
@@ -93,7 +96,7 @@ if (!sixelCapable) {
     "SIXEL support is advertised through primary device attributes parameter 4.",
     "No SIXEL capability was observed on this path, so raster frames will not be sent.",
     "",
-    "Use terminal:prototype for the portable Braille renderer.",
+    "Use terminal:unicode for the portable Braille renderer.",
     "Set KITTY_BROWSER_FORCE_SIXEL=1 only when you know the terminal supports SIXEL",
     "but the SSH/PTY path strips or delays the capability response.",
   ].join("\n"));
