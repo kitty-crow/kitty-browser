@@ -41,6 +41,17 @@ const focusedElementIsEditable = async (page: Page): Promise<boolean> => {
   }
 };
 
+const canonicalUrl = (raw: string): string => {
+  try {
+    return new URL(raw).href;
+  } catch {
+    return raw;
+  }
+};
+
+const atHome = (page: Page): boolean =>
+  canonicalUrl(page.url()) === canonicalUrl(browserHomeUrl());
+
 const historyIndex = async (page: Page): Promise<number | undefined> => {
   try {
     return await page.evaluate(() => {
@@ -61,7 +72,7 @@ const rememberLaunchHistoryFloor = async (page: Page): Promise<void> => {
 };
 
 export const safeGoBack = async (page: Page): Promise<boolean> => {
-  if (page.isClosed()) return false;
+  if (page.isClosed() || atHome(page)) return false;
 
   const floor = launchHistoryFloor.get(page);
   const current = await historyIndex(page);
