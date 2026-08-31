@@ -7,7 +7,7 @@
   "scripts": {
     "terminal": "bun src/terminal-auto.ts",
     "terminal:unicode": "bun src/unicode-terminal-browser.ts",
-    "terminal:dense-unicode": "bun src/dense-unicode-terminal-browser-v2.ts",
+    "terminal:dense-unicode": "bun src/dense-unicode-terminal-browser.ts",
     "terminal:prototype": "bun src/unicode-terminal-browser.ts",
     "terminal:sixel": "bun src/sixel-terminal-browser-guard.ts",
     "terminal:kitty": "bun src/kitty-terminal-browser-guard.ts",
