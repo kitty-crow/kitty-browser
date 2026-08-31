@@ -3,8 +3,7 @@ set -eu
 
 REPO="${KITTY_BROWSER_REPO:-kitty-crow/kitty-browser}"
 CACHE_ROOT="${XDG_CACHE_HOME:-${HOME}/.cache}/kitty-browser"
-BIN_DIR="${CACHE_ROOT}/bin"
-mkdir -p "$BIN_DIR"
+mkdir -p "$CACHE_ROOT"
 
 os_raw="$(uname -s)"
 arch_raw="$(uname -m)"
@@ -27,26 +26,40 @@ case "$arch_raw" in
     ;;
 esac
 
-suffix="${os}-${arch}"
 if [ "$os" = "linux" ]; then
   if [ -f /etc/alpine-release ] || (ldd --version 2>&1 || true) | grep -qi musl; then
-    suffix="${suffix}-musl"
+    echo "kitty-browser: bundled Playwright Chromium currently requires glibc Linux; musl/Alpine is not supported" >&2
+    exit 2
   fi
 fi
 
-asset="kitty-browser-${suffix}"
+if ! command -v curl >/dev/null 2>&1; then
+  echo "kitty-browser: curl is required to fetch the release bundle" >&2
+  exit 2
+fi
+if ! command -v tar >/dev/null 2>&1; then
+  echo "kitty-browser: tar is required to unpack the release bundle" >&2
+  exit 2
+fi
+
+suffix="${os}-${arch}"
+asset="kitty-browser-${suffix}.tar.gz"
 base="https://github.com/${REPO}/releases/latest/download"
 checksum_url="${base}/${asset}.sha256"
-binary_url="${base}/${asset}"
-binary="${BIN_DIR}/${asset}"
-checksum_tmp="${BIN_DIR}/.${asset}.sha256.tmp"
-binary_tmp="${BIN_DIR}/.${asset}.tmp"
+bundle_url="${base}/${asset}"
+install_dir="${CACHE_ROOT}/bundles/${suffix}"
+marker="${install_dir}/.archive.sha256"
+binary="${install_dir}/kitty-browser"
+mkdir -p "${CACHE_ROOT}/bundles"
+
+checksum_tmp="${CACHE_ROOT}/.${asset}.sha256.tmp"
+bundle_tmp="${CACHE_ROOT}/.${asset}.tmp"
 
 curl -fsSL "$checksum_url" -o "$checksum_tmp"
 expected="$(awk 'NR==1 {print $1}' "$checksum_tmp")"
 if [ -z "$expected" ]; then
-  echo "kitty-browser: release checksum is empty" >&2
   rm -f "$checksum_tmp"
+  echo "kitty-browser: release checksum is empty" >&2
   exit 2
 fi
 
@@ -63,24 +76,46 @@ hash_file() {
   exit 2
 }
 
-current=""
-if [ -f "$binary" ]; then
-  current="$(hash_file "$binary")"
+installed=""
+if [ -f "$marker" ]; then
+  installed="$(cat "$marker" 2>/dev/null || true)"
 fi
 
-if [ "$current" != "$expected" ]; then
-  echo "kitty-browser: downloading ${asset}" >&2
-  curl -fL "$binary_url" -o "$binary_tmp"
-  actual="$(hash_file "$binary_tmp")"
+if [ "$installed" != "$expected" ] || [ ! -x "$binary" ]; then
+  echo "kitty-browser: downloading ${asset} (includes Chromium)" >&2
+  rm -f "$bundle_tmp"
+  curl -fL "$bundle_url" -o "$bundle_tmp"
+  actual="$(hash_file "$bundle_tmp")"
   if [ "$actual" != "$expected" ]; then
-    rm -f "$binary_tmp" "$checksum_tmp"
+    rm -f "$bundle_tmp" "$checksum_tmp"
     echo "kitty-browser: SHA-256 verification failed" >&2
     echo "expected: $expected" >&2
     echo "actual:   $actual" >&2
     exit 2
   fi
-  chmod 0755 "$binary_tmp"
-  mv "$binary_tmp" "$binary"
+
+  stage="$(mktemp -d "${CACHE_ROOT}/.kitty-browser-${suffix}.XXXXXX")"
+  cleanup_stage() {
+    rm -rf "$stage"
+  }
+  trap cleanup_stage EXIT HUP INT TERM
+
+  tar -xzf "$bundle_tmp" -C "$stage"
+  if [ ! -f "$stage/kitty-browser" ]; then
+    echo "kitty-browser: release bundle does not contain kitty-browser" >&2
+    exit 2
+  fi
+  if [ ! -d "$stage/chromium" ]; then
+    echo "kitty-browser: release bundle does not contain Chromium" >&2
+    exit 2
+  fi
+
+  chmod 0755 "$stage/kitty-browser"
+  printf '%s\n' "$expected" > "$stage/.archive.sha256"
+  rm -rf "$install_dir"
+  mv "$stage" "$install_dir"
+  trap - EXIT HUP INT TERM
+  rm -f "$bundle_tmp"
 fi
 
 rm -f "$checksum_tmp"
