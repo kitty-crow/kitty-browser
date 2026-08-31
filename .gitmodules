@@ -1,0 +1,4 @@
+[submodule "vendor/unicode-art-studio"]
+	path = vendor/unicode-art-studio
+	url = https://github.com/kitty-crow/unicode-art-studio.git
+	branch = main
