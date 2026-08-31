@@ -1,5 +1,7 @@
 #!/usr/bin/env bun
-import { chromium, type Page } from "playwright";
+import type { Page } from "playwright";
+import { launchPersistentBrowser } from "./browser-profile.ts";
+import { TerminalNavigationBar } from "./terminal-navigation.ts";
 import {
   MOUSE_DISABLE,
   MOUSE_ENABLE,
@@ -48,6 +50,8 @@ const KITTY_PLACEMENT_ID = 1;
 const KITTY_CHUNK = 4096;
 const MIN_WHEEL_PIXELS = 48;
 const WHEEL_CELL_MULTIPLIER = 3;
+const INPUT_DRAIN_QUIET_MS = 30;
+const INPUT_DRAIN_MAX_MS = 250;
 
 const PRESETS = new Map<string, readonly [number, number]>([
   ["800x600", [800, 600]],
@@ -78,16 +82,21 @@ const parseResolution = (raw: string): Resolution => {
 };
 
 const help = (code: number): never => {
-  console.log(`OpenAI Pilot Headed kitty-graphics browser prototype
+  console.log(`kitty-browser Kitty graphics browser
 
 Usage:
   bun run terminal:kitty -- <url> [options]
 
 Options:
   --fps <n>                  Capture rate, integer 1-60; default 1
-  --resolution <mode>        native, 800x600, 1024x768, 720p, 1366x768,
-                             900p, 1080p, or explicit WIDTHxHEIGHT
-  --no-status                Hide the bottom status bar
+  --resolution <mode>        native, named preset, or any positive WIDTHxHEIGHT
+  --session <id>             Persistent Chromium profile/session; default "default"
+  --no-status                Hide the bottom navigation/status bar
+
+Navigation bar:
+  [<]                        Go back
+  [R]                        Refresh
+  URL                        Click to edit; Enter navigates; Esc cancels
 
 Controls:
   Mouse move                 Move/hover the browser pointer
@@ -100,14 +109,12 @@ Controls:
   Enter                      Activate/click selected page position
   Tab / Shift+Tab            Follow Chromium's native focus order
   PgUp / PgDn                Scroll browser viewport
-  Esc                        Leave text-entry mode
+  Esc                        Leave text-entry or URL-edit mode
   Ctrl+C                     Quit
 
 Chromium renders at the selected pixel resolution. The PNG frame is sent through the
-kitty graphics protocol and scaled to the available terminal cell rectangle. The pointer
-is rendered inside Chromium at the browser-pixel footprint of one displayed terminal cell.
-Touch/trackpad behaviour depends on the client terminal translating gestures into SGR
-mouse drag or wheel reports; both forms are handled.`);
+Kitty graphics protocol and scaled to the available terminal cell rectangle. Each named
+session is a real persistent Chromium user-data directory.`);
   process.exit(code);
 };
 
@@ -176,6 +183,14 @@ const navigationRace = (error: unknown): boolean => {
     || message.includes("Frame was detached");
 };
 
+const targetClosed = (error: unknown): boolean => {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.includes("Target page, context or browser has been closed")
+    || message.includes("Browser has been closed")
+    || message.includes("Target closed")
+    || message.includes("Page closed");
+};
+
 const stdout = async (value: string): Promise<void> => {
   if (process.stdout.write(value)) return;
   await new Promise<void>((resolve) => process.stdout.once("drain", resolve));
@@ -231,13 +246,16 @@ const activeRect = async (page: Page): Promise<{ x: number; y: number; width: nu
 const args = parse(process.argv.slice(2));
 if (!process.stdin.isTTY || !process.stdout.isTTY) throw new Error("terminal:kitty requires an interactive TTY");
 
-const browser = await chromium.launch({ headless: false, channel: "chromium" });
+const browser = await launchPersistentBrowser({ headless: false, channel: "chromium" });
 const page = await browser.newPage();
+const navigation = new TerminalNavigationBar(page);
 let geometry = geometryFor(terminalSize(args.status), args.resolution);
 await page.setViewportSize({ width: geometry.browserWidth, height: geometry.browserHeight });
 await page.goto(args.url, { waitUntil: "domcontentloaded", timeout: 30_000 });
 
 let running = true;
+let shuttingDown = false;
+let cleanedUp = false;
 let inputMode = false;
 let cursorX = Math.floor(geometry.columns / 2);
 let cursorY = Math.floor(geometry.rows / 2);
@@ -246,7 +264,19 @@ let resizePending = false;
 let lastStatus = "";
 let swipe: SwipeState | undefined;
 let auxiliaryButton: MouseButton | undefined;
+let inputQueue: Promise<void> = Promise.resolve();
 const mouseDecoder = new TerminalMouseDecoder();
+
+const beginShutdown = (): void => {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  running = false;
+  navigation.cancel();
+  inputMode = false;
+  swipe = undefined;
+  auxiliaryButton = undefined;
+  process.stdout.write(MOUSE_DISABLE);
+};
 
 const browserPoint = (x = cursorX, y = cursorY) => ({
   x: (x + 0.5) * geometry.pointerWidth,
@@ -255,17 +285,18 @@ const browserPoint = (x = cursorX, y = cursorY) => ({
 
 const pointerHighlighted = (): boolean => Math.floor(frame / args.fps) % 2 === 0;
 
-const status = (): string => {
-  const mode = inputMode ? "INPUT" : "NAV";
+const statusMetadata = (): string => {
+  const mode = navigation.editing ? "URL" : inputMode ? "INPUT" : "NAV";
   const resolution = args.resolution.name === "native"
     ? `native ${geometry.browserWidth}x${geometry.browserHeight}`
     : `${args.resolution.name} ${geometry.browserWidth}x${geometry.browserHeight}`;
-  const raw = ` ${page.url()}  ${mode}  ${args.fps}fps  kitty  ${resolution}  pointer ${cursorX},${cursorY}  cell ${geometry.pointerWidth.toFixed(1)}x${geometry.pointerHeight.toFixed(1)}px `;
-  return raw.length > geometry.columns ? raw.slice(0, geometry.columns) : raw.padEnd(geometry.columns, " ");
+  return `${mode}  ${args.fps}fps  kitty  session:${browser.session}  ${resolution}  pointer ${cursorX},${cursorY}`;
 };
 
+const status = (): string => navigation.render(geometry.columns, statusMetadata());
+
 const paintStatus = (): void => {
-  if (!args.status) return;
+  if (!args.status || shuttingDown) return;
   const value = status();
   if (value === lastStatus) return;
   process.stdout.write(`${at(0, geometry.rows)}\x1b[7m${value}\x1b[0m`);
@@ -273,9 +304,10 @@ const paintStatus = (): void => {
 };
 
 const ensurePointerOverlay = async (): Promise<void> => {
+  if (shuttingDown) return;
   const point = browserPoint();
   await page.evaluate(({ left, top, width, height, highlighted, blue, green }) => {
-    const id = "__openai_pilot_terminal_pointer__";
+    const id = "__kitty_browser_terminal_pointer__";
     let pointer = document.getElementById(id) as HTMLDivElement | null;
     if (!pointer) {
       pointer = document.createElement("div");
@@ -331,11 +363,13 @@ const ensurePointerOverlay = async (): Promise<void> => {
 };
 
 const hoverPointer = async (): Promise<void> => {
+  if (shuttingDown) return;
   const point = browserPoint();
   await page.mouse.move(point.x, point.y);
 };
 
 const movePointer = async (dx: number, dy: number): Promise<void> => {
+  if (shuttingDown) return;
   const nextX = cursorX + dx;
   const nextY = cursorY + dy;
   if (nextX < 0 || nextX >= geometry.columns || nextY < 0 || nextY >= geometry.rows) {
@@ -349,8 +383,9 @@ const movePointer = async (dx: number, dy: number): Promise<void> => {
 };
 
 const followFocus = async (): Promise<void> => {
+  if (shuttingDown) return;
   const rect = await activeRect(page);
-  if (!rect) return;
+  if (!rect || shuttingDown) return;
   cursorX = clamp(Math.floor((rect.x + rect.width / 2) / geometry.pointerWidth), 0, geometry.columns - 1);
   cursorY = clamp(Math.floor((rect.y + rect.height / 2) / geometry.pointerHeight), 0, geometry.rows - 1);
   await hoverPointer();
@@ -358,8 +393,10 @@ const followFocus = async (): Promise<void> => {
 };
 
 const activate = async (): Promise<void> => {
+  if (shuttingDown) return;
   const point = browserPoint();
   const editable = await editableAt(page, point.x, point.y);
+  if (shuttingDown) return;
   await page.mouse.click(point.x, point.y);
   inputMode = editable;
   lastStatus = "";
@@ -367,7 +404,7 @@ const activate = async (): Promise<void> => {
 };
 
 const pointFromMouse = async (x: number, y: number): Promise<boolean> => {
-  if (x < 0 || x >= geometry.columns || y < 0 || y >= geometry.rows) return false;
+  if (shuttingDown || x < 0 || x >= geometry.columns || y < 0 || y >= geometry.rows) return false;
   cursorX = x;
   cursorY = y;
   await hoverPointer();
@@ -376,7 +413,21 @@ const pointFromMouse = async (x: number, y: number): Promise<boolean> => {
   return true;
 };
 
+const handleStatusMouse = async (event: TerminalMouseEvent): Promise<boolean> => {
+  if (!args.status || event.y !== geometry.rows) return false;
+  if (event.kind === "press" && (!event.button || event.button === "left")) {
+    inputMode = false;
+    swipe = undefined;
+    auxiliaryButton = undefined;
+    await navigation.click(event.x, geometry.columns, statusMetadata());
+    lastStatus = "";
+    paintStatus();
+  }
+  return true;
+};
+
 const handleMouse = async (event: TerminalMouseEvent): Promise<void> => {
+  if (shuttingDown || await handleStatusMouse(event)) return;
   if (!(await pointFromMouse(event.x, event.y))) return;
 
   if (event.kind === "wheel") {
@@ -424,7 +475,7 @@ const handleMouse = async (event: TerminalMouseEvent): Promise<void> => {
 };
 
 const applyResize = async (): Promise<void> => {
-  if (!resizePending) return;
+  if (!resizePending || shuttingDown) return;
   resizePending = false;
   const previous = geometry;
   geometry = geometryFor(terminalSize(args.status), args.resolution);
@@ -438,16 +489,23 @@ const applyResize = async (): Promise<void> => {
 };
 
 const capture = async (): Promise<void> => {
+  if (shuttingDown) return;
   try {
     await applyResize();
+    if (shuttingDown) return;
     await ensurePointerOverlay();
+    if (shuttingDown) return;
     const screenshot = await page.screenshot({ type: "png" });
     await stdout(kittyFrame(screenshot, geometry));
     paintStatus();
     frame += 1;
   } catch (error) {
+    if (targetClosed(error)) {
+      beginShutdown();
+      return;
+    }
     if (navigationRace(error)) {
-      await page.waitForLoadState("domcontentloaded", { timeout: 750 }).catch(() => undefined);
+      if (!shuttingDown) await page.waitForLoadState("domcontentloaded", { timeout: 750 }).catch(() => undefined);
       return;
     }
     throw error;
@@ -456,7 +514,15 @@ const capture = async (): Promise<void> => {
 
 const key = async (text: string): Promise<void> => {
   if (text === "\x03") {
-    running = false;
+    beginShutdown();
+    return;
+  }
+  if (shuttingDown) return;
+
+  if (navigation.editing) {
+    await navigation.handleKey(text);
+    lastStatus = "";
+    paintStatus();
     return;
   }
 
@@ -499,7 +565,8 @@ const key = async (text: string): Promise<void> => {
 };
 
 page.on("framenavigated", (frameHandle) => {
-  if (frameHandle !== page.mainFrame()) return;
+  if (frameHandle !== page.mainFrame() || shuttingDown) return;
+  navigation.cancel();
   inputMode = false;
   swipe = undefined;
   auxiliaryButton = undefined;
@@ -507,24 +574,24 @@ page.on("framenavigated", (frameHandle) => {
   cursorY = clamp(cursorY, 0, geometry.rows - 1);
   lastStatus = "";
 });
+page.on("close", beginShutdown);
+browser.on("disconnected", beginShutdown);
 
-const cleanup = async (): Promise<void> => {
-  process.stdin.setRawMode(false);
-  process.stdin.pause();
-  process.stdout.write(`${MOUSE_DISABLE}${kittyDelete()}\x1b[0m\x1b[?7h\x1b[?25h\x1b[?1049l`);
-  await browser.close();
-};
-
-process.stdout.write(`\x1b[?1049h\x1b[?25l\x1b[?7l${MOUSE_ENABLE}\x1b[2J`);
-process.stdin.setEncoding("utf8");
-process.stdin.setRawMode(true);
-process.stdin.resume();
-let inputQueue = Promise.resolve();
-process.stdin.on("data", (chunk: string) => {
+const onStdinData = (chunk: string): void => {
+  if (shuttingDown) return;
   for (const input of mouseDecoder.push(chunk)) {
     inputQueue = inputQueue
-      .then(() => input.kind === "mouse" ? handleMouse(input.event) : key(input.text))
+      .then(async () => {
+        if (shuttingDown) return;
+        if (input.kind === "mouse") await handleMouse(input.event);
+        else await key(input.text);
+      })
       .catch((error) => {
+        if (shuttingDown || targetClosed(error)) {
+          beginShutdown();
+          return;
+        }
+        navigation.cancel();
         inputMode = false;
         swipe = undefined;
         auxiliaryButton = undefined;
@@ -532,14 +599,48 @@ process.stdin.on("data", (chunk: string) => {
         process.stderr.write(`\ninput error: ${error instanceof Error ? error.message : String(error)}\n`);
       });
   }
-});
-process.stdout.on("resize", () => { resizePending = true; });
+};
+
+const drainPendingInput = async (): Promise<void> => {
+  process.stdin.off("data", onStdinData);
+  let lastData = performance.now();
+  const discard = (): void => { lastData = performance.now(); };
+  process.stdin.on("data", discard);
+  process.stdin.resume();
+  const started = performance.now();
+  while (performance.now() - started < INPUT_DRAIN_MAX_MS) {
+    if (performance.now() - lastData >= INPUT_DRAIN_QUIET_MS) break;
+    await Bun.sleep(10);
+  }
+  process.stdin.pause();
+  process.stdin.off("data", discard);
+};
+
+const cleanup = async (): Promise<void> => {
+  if (cleanedUp) return;
+  cleanedUp = true;
+  beginShutdown();
+  await inputQueue.catch(() => undefined);
+  await drainPendingInput();
+  if (process.stdin.isTTY) process.stdin.setRawMode(false);
+  process.stdin.pause();
+  if (browser.isConnected()) await browser.close().catch(() => undefined);
+  process.stdout.write(`${MOUSE_DISABLE}${kittyDelete()}\x1b[0m\x1b[?7h\x1b[?25h\x1b[?1049l${MOUSE_DISABLE}\x1b[0m\x1b[?7h\x1b[?25h`);
+};
+
+process.stdout.write(`\x1b[?1049h\x1b[?25l\x1b[?7l${MOUSE_ENABLE}\x1b[2J`);
+process.stdin.setEncoding("utf8");
+process.stdin.setRawMode(true);
+process.stdin.resume();
+process.stdin.on("data", onStdinData);
+process.stdout.on("resize", () => { if (!shuttingDown) resizePending = true; });
 
 try {
   const interval = 1000 / args.fps;
   while (running) {
     const started = performance.now();
     await capture();
+    if (!running) break;
     const remaining = interval - (performance.now() - started);
     if (remaining > 0) await Bun.sleep(remaining);
   }
