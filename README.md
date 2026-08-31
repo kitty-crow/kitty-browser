@@ -125,13 +125,15 @@ Strict mode applies to main-frame clicks, redirects, form submissions, JavaScrip
 
 When a cross-domain top-level navigation is blocked, Chromium's normal `chrome-error` page is left visible for about two seconds. Kitty Browser then automatically returns that tab to the exact launch/home URL. A later blocked attempt replaces any earlier pending return timer rather than stacking multiple return navigations.
 
-## Setup
+## Setup from source
 
 ```bash
 git submodule update --init --recursive
 bun install
 bunx playwright install chromium
 ```
+
+Source/development runs use Playwright's managed Chromium unless `KITTY_BROWSER_CHROMIUM_EXECUTABLE` points at another Chromium executable. Standalone release bundles instead carry Chromium beside the compiled Kitty Browser executable and select it automatically.
 
 On headless Linux hosts, graphical renderers that use real headed Chromium bootstrap through Xvfb when no graphical `DISPLAY` is available.
 
@@ -151,9 +153,9 @@ The Unicode renderer always derives its Chromium viewport from the terminal text
 
 The render loops are sequential and do not queue stale frames. Mouse, keyboard, scrolling, focus navigation and text entry are forwarded to the real Chromium page.
 
-## Standalone binary releases
+## Self-contained releases
 
-`scripts/release.ts` cross-compiles Kitty Browser with the Bun runtime embedded and publishes deterministic assets to a GitHub Release. The release builder requires Bun 1.4 or newer so the complete target matrix, including Windows ARM64, is available.
+`scripts/release.ts` cross-compiles Kitty Browser with the Bun runtime embedded and packages the exact full Chromium revision pinned by the installed Playwright version into every target archive. The release builder requires Bun 1.4 or newer so the complete target matrix, including Windows ARM64, is available.
 
 Build everything locally without publishing:
 
@@ -173,38 +175,45 @@ For an explicit tag:
 bun run release --tag v0.1.1
 ```
 
-The builder updates submodules, installs dependencies, refuses tracked source changes by default, compiles targets sequentially, writes SHA-256 checksums, then creates or updates the matching GitHub Release through an authenticated `gh` CLI. Re-running the same release replaces its assets with `--clobber`; it refuses to reuse a remote tag that points at another commit.
+The builder updates submodules, installs dependencies, reads `node_modules/playwright-core/browsers.json` for Playwright's pinned Chromium revision, downloads the matching official Playwright Chromium archives, compiles Kitty Browser, verifies that each Chromium executable is present, packages the pair, writes SHA-256 checksums, then creates or updates the matching GitHub Release through an authenticated `gh` CLI. Chromium downloads are cached under `dist/.chromium-cache/` so subsequent release builds do not redownload unchanged revisions.
 
-The published binary matrix is:
+The published bundle matrix is:
 
 ```text
-kitty-browser-linux-x64          glibc, baseline x64
-kitty-browser-linux-arm64        glibc, ARM64
-kitty-browser-linux-x64-musl     musl, x64
-kitty-browser-linux-arm64-musl   musl, ARM64
-kitty-browser-darwin-x64         Intel macOS, baseline x64
-kitty-browser-darwin-arm64       Apple Silicon
-kitty-browser-windows-x64.exe    Windows x64, baseline
-kitty-browser-windows-arm64.exe  Windows ARM64
+kitty-browser-linux-x64.tar.gz
+kitty-browser-linux-arm64.tar.gz
+kitty-browser-darwin-x64.tar.gz
+kitty-browser-darwin-arm64.tar.gz
+kitty-browser-windows-x64.tar.gz
+kitty-browser-windows-arm64.tar.gz
 ```
 
-Each release also contains `SHA256SUMS`, one `.sha256` file per executable, `kitty-browser-manifest.json`, and the Unix/PowerShell bootstrap selectors. The manifest records OS, architecture, libc where relevant, Bun compile target, byte size, checksum, source commit and release tag, so future installers do not have to infer metadata from filenames.
+Each archive contains:
 
-The Unix bootstrap detects Linux/macOS, x64/ARM64 and glibc/musl, verifies the selected release asset, caches it, and reopens `/dev/tty` before execution so this form can remain interactive:
+```text
+kitty-browser[.exe]
+chromium/
+  <full Playwright Chromium distribution>
+kitty-browser-bundle.json
+```
+
+At runtime Kitty Browser checks beside `process.execPath` for the bundled Chromium executable and passes that exact path to Playwright. It therefore does not require `~/.cache/ms-playwright`, a system Chrome installation, Node, Bun or npm on the client.
+
+Each release also contains `SHA256SUMS`, one `.sha256` file per archive, `kitty-browser-manifest.json`, and the Unix/PowerShell bootstrap selectors. The manifest records the Bun target, archive size/checksum and exact Chromium browser version/revision. Windows ARM64 uses a native ARM64 Kitty Browser executable with Playwright's currently supported win64 Chromium build; Chromium itself runs through Windows ARM64 x64 emulation. Linux bundles target glibc systems because Playwright's Chromium build is not a musl/Alpine build.
+
+The Unix bootstrap detects Linux/macOS and x64/ARM64, downloads the correct archive, verifies its SHA-256, unpacks Kitty Browser and Chromium together into its cache, and reopens `/dev/tty` before execution so this remains interactive:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/kitty-crow/kitty-browser/main/bootstrap/kitty-browser.sh | sh -s -- https://example.com
 ```
 
-The PowerShell bootstrap performs the equivalent architecture selection and SHA-256 verification on Windows.
-
-The standalone executable layer is complete, but Chromium is deliberately not embedded in these first-stage release assets yet. The manifest exposes `chromium.strategy = "managed-runtime-planned"`; the next distribution step is to make the bootstrap/runtime provision Kitty Browser's pinned Chromium build automatically. Until that layer is added, the target machine still needs the matching Playwright Chromium runtime available.
+The PowerShell bootstrap performs the equivalent architecture selection, verification and extraction on Windows.
 
 ## Dependency boundary
 
 ```text
 kitty-browser
-  ├─ Playwright / Chromium
+  ├─ Playwright / bundled Chromium
   └─ vendor/unicode-art-studio
 
 openAI-pilot-headed
