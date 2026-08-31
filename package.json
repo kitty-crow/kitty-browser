@@ -13,6 +13,8 @@
     "release:build": "bun scripts/release.ts --build-only"
   },
   "dependencies": {
+    "chromium-bidi": "7.2.0",
+    "electron": "file:stubs/electron",
     "playwright": "1.55.0",
     "pngjs": "^7.0.0",
     "tldts": "^7.0.0"
