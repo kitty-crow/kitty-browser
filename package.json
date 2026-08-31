@@ -3,12 +3,10 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Standalone real-Chromium terminal browser with Unicode, dense-Unicode, SIXEL, and Kitty graphics renderers.",
+  "description": "Standalone real-Chromium terminal browser with Unicode, SIXEL, and Kitty graphics renderers.",
   "scripts": {
     "terminal": "bun src/terminal-auto.ts",
     "terminal:unicode": "bun src/unicode-terminal-browser.ts",
-    "terminal:dense-unicode": "bun src/dense-unicode-terminal-browser.ts",
-    "terminal:prototype": "bun src/unicode-terminal-browser.ts",
     "terminal:sixel": "bun src/sixel-terminal-browser-guard.ts",
     "terminal:kitty": "bun src/kitty-terminal-browser-guard.ts",
     "terminal:capabilities": "bun src/terminal-capabilities.ts"
