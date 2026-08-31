@@ -1,4 +1,4 @@
-import { chromium, type Browser, type BrowserContext, type BrowserTypeLaunchOptions, type Page } from "playwright";
+import { chromium, type Browser, type BrowserContext, type Page } from "playwright";
 import { mkdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -19,7 +19,7 @@ export interface PersistentBrowser {
 
 export interface PersistentBrowserOptions {
   readonly headless: boolean;
-  readonly channel?: BrowserTypeLaunchOptions["channel"];
+  readonly channel?: string;
 }
 
 export const launchPersistentBrowser = async (
