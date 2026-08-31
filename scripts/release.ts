@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 
-import { chmod, copyFile, mkdir, rm } from "node:fs/promises";
+import { chmod, copyFile, mkdir, rename, rm } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 
 interface ReleaseOptions {
@@ -30,6 +30,12 @@ interface BuiltBundle extends ReleaseTarget {
   readonly archiveFilename: string;
   readonly bytes: number;
   readonly sha256: string;
+}
+
+interface ExecResult {
+  readonly code: number;
+  readonly stdout: string;
+  readonly stderr: string;
 }
 
 const ROOT = resolve(import.meta.dir, "..");
@@ -120,13 +126,9 @@ Options:
   --allow-dirty     Permit tracked working-tree changes
   -h, --help        Show this help
 
-Default output:
-  dist/release/
-
-Each target archive contains the standalone Kitty Browser executable, embedded Bun
-runtime, and the exact full Chromium revision pinned by the installed Playwright version.
-The normal command builds every target, writes SHA-256 checksums and a machine-readable
-manifest, then creates/updates the matching GitHub Release using gh.`);
+Each target archive contains Kitty Browser, the Bun runtime and the exact Chromium
+revision pinned by Playwright. Standalone compilation deliberately does not enable Bun
+bytecode because Bun 1.4 rejects top-level await when bytecode generation is enabled.`);
   process.exit(code);
 };
 
@@ -150,34 +152,16 @@ const parseOptions = (argv: readonly string[]): ReleaseOptions => {
       out.tag = arg.slice("--tag=".length);
       continue;
     }
-    if (arg === "--draft") {
-      out.draft = true;
-      continue;
-    }
-    if (arg === "--prerelease") {
-      out.prerelease = true;
-      continue;
-    }
-    if (arg === "--build-only") {
-      out.buildOnly = true;
-      continue;
-    }
-    if (arg === "--allow-dirty") {
-      out.allowDirty = true;
-      continue;
-    }
-    if (arg === "--help" || arg === "-h") help(0);
-    throw new Error(`unknown release-builder argument: ${arg}`);
+    if (arg === "--draft") out.draft = true;
+    else if (arg === "--prerelease") out.prerelease = true;
+    else if (arg === "--build-only") out.buildOnly = true;
+    else if (arg === "--allow-dirty") out.allowDirty = true;
+    else if (arg === "--help" || arg === "-h") help(0);
+    else throw new Error(`unknown release-builder argument: ${arg}`);
   }
 
   return out;
 };
-
-interface ExecResult {
-  readonly code: number;
-  readonly stdout: string;
-  readonly stderr: string;
-}
 
 const exec = async (command: readonly string[], capture = false): Promise<ExecResult> => {
   const child = Bun.spawn([...command], {
@@ -187,13 +171,8 @@ const exec = async (command: readonly string[], capture = false): Promise<ExecRe
     stdout: capture ? "pipe" : "inherit",
     stderr: capture ? "pipe" : "inherit",
   });
-
-  const stdoutPromise = capture && child.stdout
-    ? new Response(child.stdout).text()
-    : Promise.resolve("");
-  const stderrPromise = capture && child.stderr
-    ? new Response(child.stderr).text()
-    : Promise.resolve("");
+  const stdoutPromise = capture && child.stdout ? new Response(child.stdout).text() : Promise.resolve("");
+  const stderrPromise = capture && child.stderr ? new Response(child.stderr).text() : Promise.resolve("");
   const code = await child.exited;
   const [stdout, stderr] = await Promise.all([stdoutPromise, stderrPromise]);
   return { code, stdout: stdout.trim(), stderr: stderr.trim() };
@@ -201,24 +180,18 @@ const exec = async (command: readonly string[], capture = false): Promise<ExecRe
 
 const checked = async (command: readonly string[], capture = false): Promise<ExecResult> => {
   const result = await exec(command, capture);
-  if (result.code !== 0) {
-    const details = result.stderr || result.stdout;
-    throw new Error(`${command.join(" ")} failed with exit code ${result.code}${details ? `\n${details}` : ""}`);
-  }
-  return result;
+  if (result.code === 0) return result;
+  const details = result.stderr || result.stdout;
+  throw new Error(`${command.join(" ")} failed with exit code ${result.code}${details ? `\n${details}` : ""}`);
 };
 
-const commandExists = async (command: string): Promise<boolean> => {
-  const result = await exec(["sh", "-lc", `command -v ${command} >/dev/null 2>&1`]);
-  return result.code === 0;
-};
+const commandExists = async (command: string): Promise<boolean> =>
+  (await exec(["sh", "-lc", `command -v ${command} >/dev/null 2>&1`])).code === 0;
 
 const assertSupportedBun = (): void => {
-  const [major = 0, minor = 0] = Bun.version.split(".").map((value) => Number.parseInt(value, 10));
+  const [major = 0, minor = 0] = Bun.version.split(".").map((part) => Number.parseInt(part, 10));
   if (major > MIN_BUN_MAJOR || (major === MIN_BUN_MAJOR && minor >= MIN_BUN_MINOR)) return;
-  throw new Error(
-    `release builder requires Bun >= ${MIN_BUN_MAJOR}.${MIN_BUN_MINOR}.0 for the full target matrix (including Windows ARM64); found ${Bun.version}. Run: bun upgrade`,
-  );
+  throw new Error(`release builder requires Bun >= ${MIN_BUN_MAJOR}.${MIN_BUN_MINOR}.0; found ${Bun.version}`);
 };
 
 const sha256File = async (path: string): Promise<string> => {
@@ -235,25 +208,19 @@ const chromiumInfo = async (): Promise<ChromiumInfo> => {
   if (!chromium?.revision || !chromium.browserVersion) {
     throw new Error(`could not read Chromium revision/version from ${BROWSERS_JSON}`);
   }
-  return {
-    revision: chromium.revision,
-    browserVersion: chromium.browserVersion,
-  };
+  return { revision: chromium.revision, browserVersion: chromium.browserVersion };
 };
 
-const downloadChromium = async (
-  info: ChromiumInfo,
-  archiveName: string,
-): Promise<string> => {
+const downloadChromium = async (info: ChromiumInfo, archiveName: string): Promise<string> => {
   await mkdir(CHROMIUM_CACHE, { recursive: true });
   const cached = join(CHROMIUM_CACHE, `${info.revision}-${archiveName}`);
   if (await Bun.file(cached).exists()) return cached;
 
-  const relative = `builds/chromium/${info.revision}/${archiveName}`;
   const temporary = `${cached}.tmp`;
   await rm(temporary, { force: true });
-
+  const relative = `builds/chromium/${info.revision}/${archiveName}`;
   let lastError = "";
+
   for (const mirror of PLAYWRIGHT_CDN_MIRRORS) {
     const url = `${mirror}/${relative}`;
     console.log(`    downloading ${url}`);
@@ -264,17 +231,15 @@ const downloadChromium = async (
         continue;
       }
       await Bun.write(temporary, response);
-      await rm(cached, { force: true });
-      await Bun.write(cached, Bun.file(temporary));
-      await rm(temporary, { force: true });
+      await rename(temporary, cached);
       return cached;
     } catch (error) {
       lastError = error instanceof Error ? error.message : String(error);
+      await rm(temporary, { force: true });
     }
   }
 
-  await rm(temporary, { force: true });
-  throw new Error(`failed to download Playwright Chromium ${archiveName}: ${lastError || "all CDN mirrors failed"}`);
+  throw new Error(`failed to download Playwright Chromium ${archiveName}: ${lastError || "all mirrors failed"}`);
 };
 
 const compileTarget = async (target: ReleaseTarget, executable: string): Promise<void> => {
@@ -292,7 +257,6 @@ const compileTarget = async (target: ReleaseTarget, executable: string): Promise
       autoloadTsconfig: false,
     },
     minify: true,
-    bytecode: true,
     sourcemap: "none",
     throw: false,
   });
@@ -318,10 +282,7 @@ const buildBundle = async (
 
   await rm(bundleDir, { recursive: true, force: true });
   await rm(buildDir, { recursive: true, force: true });
-  await mkdir(bundleDir, { recursive: true });
-  await mkdir(buildDir, { recursive: true });
   await mkdir(chromiumDir, { recursive: true });
-
   await compileTarget(target, builtExecutable);
   await copyFile(builtExecutable, bundledExecutable);
   if (target.os !== "windows") await chmod(bundledExecutable, 0o755);
@@ -336,7 +297,7 @@ const buildBundle = async (
   }
   if (target.os !== "windows") await chmod(browserExecutable, 0o755).catch(() => undefined);
 
-  const bundleMetadata = {
+  await Bun.write(join(bundleDir, "kitty-browser-bundle.json"), `${JSON.stringify({
     schemaVersion: 1,
     name: "kitty-browser",
     version,
@@ -350,11 +311,7 @@ const buildBundle = async (
       browserArch: target.browserArch,
       executable: ["chromium", ...target.browserExecutable].join("/"),
     },
-  };
-  await Bun.write(
-    join(bundleDir, "kitty-browser-bundle.json"),
-    `${JSON.stringify(bundleMetadata, null, 2)}\n`,
-  );
+  }, null, 2)}\n`);
 
   const archiveFilename = `kitty-browser-${target.id}.tar.gz`;
   const archivePath = join(OUT, archiveFilename);
@@ -364,17 +321,11 @@ const buildBundle = async (
   const archive = Bun.file(archivePath);
   const sha256 = await sha256File(archivePath);
   await Bun.write(`${archivePath}.sha256`, `${sha256}  ${archiveFilename}\n`);
-
   console.log(`    ${archiveFilename}`);
   console.log(`    ${(archive.size / 1024 / 1024).toFixed(1)} MiB`);
   console.log(`    sha256 ${sha256}`);
 
-  return {
-    ...target,
-    archiveFilename,
-    bytes: archive.size,
-    sha256,
-  };
+  return { ...target, archiveFilename, bytes: archive.size, sha256 };
 };
 
 assertSupportedBun();
@@ -388,55 +339,51 @@ await checked(["git", "rev-parse", "--is-inside-work-tree"], true);
 const head = (await checked(["git", "rev-parse", "HEAD"], true)).stdout;
 
 if (!options.allowDirty) {
-  const unstaged = await exec(["git", "diff", "--quiet"]);
-  const staged = await exec(["git", "diff", "--cached", "--quiet"]);
+  const [unstaged, staged] = await Promise.all([
+    exec(["git", "diff", "--quiet"]),
+    exec(["git", "diff", "--cached", "--quiet"]),
+  ]);
   if (unstaged.code !== 0 || staged.code !== 0) {
     throw new Error("tracked working-tree changes exist; commit them first or pass --allow-dirty");
   }
 }
 
-if (!options.buildOnly && !(await commandExists("gh"))) {
-  throw new Error("gh CLI is required to publish releases");
+for (const command of ["git", "unzip", "tar"]) {
+  if (!(await commandExists(command))) throw new Error(`${command} is required by the release builder`);
 }
+if (!options.buildOnly && !(await commandExists("gh"))) throw new Error("gh CLI is required to publish releases");
 
 console.log("==> Preparing repository");
 await checked(["git", "submodule", "update", "--init", "--recursive"]);
-const submodules = await exec([
-  "git",
-  "submodule",
-  "foreach",
-  "--recursive",
-  "--quiet",
-  "test -z \"$(git status --porcelain)\"",
-]);
-if (submodules.code !== 0 && !options.allowDirty) {
-  throw new Error("a vendored submodule has local changes; commit/reset them or pass --allow-dirty");
+if (!options.allowDirty) {
+  const submodules = await exec([
+    "git",
+    "submodule",
+    "foreach",
+    "--recursive",
+    "--quiet",
+    "test -z \"$(git status --porcelain)\"",
+  ]);
+  if (submodules.code !== 0) throw new Error("a vendored submodule has local changes");
 }
-
-if (!(await commandExists("unzip"))) throw new Error("unzip is required to assemble Chromium release bundles");
-if (!(await commandExists("tar"))) throw new Error("tar is required to assemble release bundles");
 
 console.log("==> Installing build dependencies");
 await checked([process.execPath, "install"]);
-const chromium = await chromiumInfo();
 
 await rm(OUT, { recursive: true, force: true });
-await mkdir(OUT, { recursive: true });
 await mkdir(STAGE, { recursive: true });
 await mkdir(BUILD, { recursive: true });
 
+const info = await chromiumInfo();
 console.log(`==> Building Kitty Browser ${tag}`);
 console.log(`    commit ${head}`);
 console.log(`    Bun ${Bun.version}`);
-console.log(`    Chromium ${chromium.browserVersion} (Playwright revision ${chromium.revision})`);
+console.log(`    Chromium ${info.browserVersion} (Playwright revision ${info.revision})`);
 
 const bundles: BuiltBundle[] = [];
-for (const target of TARGETS) bundles.push(await buildBundle(target, chromium, version, head));
+for (const target of TARGETS) bundles.push(await buildBundle(target, info, version, head));
 
-const checksumLines = bundles
-  .map((bundle) => `${bundle.sha256}  ${bundle.archiveFilename}`)
-  .join("\n");
-await Bun.write(join(OUT, "SHA256SUMS"), `${checksumLines}\n`);
+await Bun.write(join(OUT, "SHA256SUMS"), `${bundles.map((bundle) => `${bundle.sha256}  ${bundle.archiveFilename}`).join("\n")}\n`);
 
 let repository: string | undefined;
 if (!options.buildOnly) {
@@ -444,7 +391,7 @@ if (!options.buildOnly) {
   repository = (await checked(["gh", "repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"], true)).stdout;
 }
 
-const manifest = {
+await Bun.write(join(OUT, "kitty-browser-manifest.json"), `${JSON.stringify({
   schemaVersion: 2,
   name: "kitty-browser",
   version,
@@ -456,8 +403,8 @@ const manifest = {
   chromium: {
     bundled: true,
     source: "playwright",
-    revision: chromium.revision,
-    browserVersion: chromium.browserVersion,
+    revision: info.revision,
+    browserVersion: info.browserVersion,
   },
   bundles: bundles.map((bundle) => ({
     id: bundle.id,
@@ -467,29 +414,21 @@ const manifest = {
     archive: bundle.archiveFilename,
     bytes: bundle.bytes,
     sha256: bundle.sha256,
-    chromium: {
-      browserArch: bundle.browserArch,
-      archive: bundle.browserArchive,
-      executable: ["chromium", ...bundle.browserExecutable].join("/"),
-    },
+    chromiumArch: bundle.browserArch,
+    chromiumExecutable: ["chromium", ...bundle.browserExecutable].join("/"),
   })),
-};
-await Bun.write(
-  join(OUT, "kitty-browser-manifest.json"),
-  `${JSON.stringify(manifest, null, 2)}\n`,
-);
+}, null, 2)}\n`);
 
-for (const installer of ["kitty-browser.sh", "kitty-browser.ps1"]) {
-  await copyFile(join(ROOT, "bootstrap", installer), join(OUT, installer));
+for (const bootstrap of ["kitty-browser.sh", "kitty-browser.ps1"]) {
+  await copyFile(join(ROOT, "bootstrap", bootstrap), join(OUT, bootstrap));
 }
 
 const notesPath = join(OUT, "release-notes.md");
-await Bun.write(notesPath, `# Kitty Browser ${tag}\n\nSelf-contained Kitty Browser bundles for supported 64-bit Linux, macOS and Windows targets. Each archive includes the standalone Kitty Browser executable, Bun runtime and full Playwright Chromium ${chromium.browserVersion} (revision ${chromium.revision}).\n\n- Commit: \`${head}\`\n- Bun: \`${Bun.version}\`\n- Chromium: \`${chromium.browserVersion}\` / Playwright revision \`${chromium.revision}\`\n- SHA-256 checksums: \`SHA256SUMS\` and per-bundle \`.sha256\` assets\n- Machine-readable selector data: \`kitty-browser-manifest.json\`\n\nWindows ARM64 uses a native ARM64 Kitty Browser executable with Playwright's supported win64 Chromium build. Linux bundles target glibc systems; Playwright Chromium is not a musl/Alpine build.\n`);
+await Bun.write(notesPath, `# Kitty Browser ${tag}\n\nSelf-contained Kitty Browser bundles with Bun and Chromium.\n\n- Commit: \`${head}\`\n- Bun: \`${Bun.version}\`\n- Chromium: \`${info.browserVersion}\` / Playwright revision \`${info.revision}\`\n- SHA-256: \`SHA256SUMS\` and per-bundle \`.sha256\` assets\n- Selector metadata: \`kitty-browser-manifest.json\`\n\nWindows ARM64 uses a native ARM64 Kitty Browser executable with Playwright's x64 Chromium under Windows x64 emulation.\n`);
 
 await rm(STAGE, { recursive: true, force: true });
 await rm(BUILD, { recursive: true, force: true });
-
-console.log(`\n==> Bundles ready in ${OUT}`);
+console.log(`\n==> Artifacts ready in ${OUT}`);
 
 if (options.buildOnly) {
   console.log("==> Build-only mode; skipping GitHub upload");
@@ -508,16 +447,10 @@ if (remoteTag.stdout) {
 const releaseExists = (await exec(["gh", "release", "view", tag], true)).code === 0;
 if (!releaseExists) {
   const create = [
-    "gh",
-    "release",
-    "create",
-    tag,
-    "--target",
-    head,
-    "--title",
-    `Kitty Browser ${tag}`,
-    "--notes-file",
-    notesPath,
+    "gh", "release", "create", tag,
+    "--target", head,
+    "--title", `Kitty Browser ${tag}`,
+    "--notes-file", notesPath,
   ];
   if (options.draft) create.push("--draft");
   if (options.prerelease) create.push("--prerelease");
@@ -540,8 +473,5 @@ const uploadPaths = [
 ];
 
 console.log("==> Uploading release assets");
-for (const path of uploadPaths) {
-  await checked(["gh", "release", "upload", tag, path, "--clobber"]);
-}
-
+for (const path of uploadPaths) await checked(["gh", "release", "upload", tag, path, "--clobber"]);
 console.log(`\nRelease complete: ${repository}@${tag}`);
