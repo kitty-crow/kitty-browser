@@ -1,3 +1,5 @@
+import { filterTerminalShortcutInput } from "./browser-shortcuts.ts";
+
 export type MouseButton = "left" | "middle" | "right";
 
 export interface MouseModifiers {
@@ -69,7 +71,7 @@ export class TerminalMouseDecoder {
   #pending = "";
 
   push(chunk: string): TerminalInputEvent[] {
-    this.#pending += chunk;
+    this.#pending += filterTerminalShortcutInput(chunk);
     const out: TerminalInputEvent[] = [];
 
     while (this.#pending) {
