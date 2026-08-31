@@ -1,4 +1,7 @@
 #!/usr/bin/env bun
+import { consumeBrowserSessionArg } from "./terminal-session.ts";
+
+consumeBrowserSessionArg();
 
 const forced = process.env.OPENAI_PILOT_FORCE_KITTY === "1";
 const term = process.env.TERM ?? "";
@@ -79,9 +82,6 @@ const probeKittyGraphics = async (): Promise<boolean> => {
         return;
       }
 
-      // Kitty's protocol specifies sending the graphics query immediately before
-      // a standard primary-device-attributes query. If the DA reply arrives before
-      // any graphics reply, the graphics protocol is unsupported on this path.
       if (/\x1b\[\??[0-9;]*c/u.test(received)) finish(false);
     };
 
@@ -116,7 +116,7 @@ if (!kittyCapable) {
     "The probe used kitty's graphics query followed by a standard device-attributes query.",
     "No kitty graphics response was received, so full PNG frames will not be sent.",
     "",
-    "Use terminal:prototype for the portable Braille renderer.",
+    "Use terminal:unicode for the portable Braille renderer.",
     "Set OPENAI_PILOT_FORCE_KITTY=1 only when you know the terminal path supports",
     "kitty graphics but strips or delays capability-query responses.",
   ].join("\n"));
