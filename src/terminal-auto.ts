@@ -26,8 +26,6 @@ const probeTerminal = async (): Promise<ProbeResult> => {
     if (attached && onData) stdin.off("data", onData);
     if (!wasRaw) stdin.setRawMode(false);
     stdin.pause();
-    // An unsupported APC sequence can be rendered literally by some clients.
-    // Erase the probe line before handing control to the selected renderer.
     process.stdout.write("\r\x1b[2K");
   };
 
@@ -81,14 +79,13 @@ const probe = await probeTerminal();
 
 if (probe.kitty) {
   process.env.OPENAI_PILOT_RENDERER = "kitty";
-  // terminal:auto already proved kitty support, so let the guard focus on
-  // providing a virtual display before it starts the headed Chromium renderer.
   process.env.OPENAI_PILOT_FORCE_KITTY = "1";
   await import("./kitty-terminal-browser-guard.ts");
+} else if (probe.sixel) {
+  process.env.OPENAI_PILOT_RENDERER = "sixel";
+  process.env.KITTY_BROWSER_FORCE_SIXEL = "1";
+  await import("./sixel-terminal-browser-guard.ts");
 } else {
   process.env.OPENAI_PILOT_RENDERER = "braille";
-  if (probe.sixel) {
-    process.stderr.write("terminal:auto: Sixel is advertised, but the Sixel renderer is not implemented yet; using Braille.\n");
-  }
   await import("./terminal-browser.ts");
 }
