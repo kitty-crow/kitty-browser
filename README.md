@@ -151,6 +151,55 @@ The Unicode renderer always derives its Chromium viewport from the terminal text
 
 The render loops are sequential and do not queue stale frames. Mouse, keyboard, scrolling, focus navigation and text entry are forwarded to the real Chromium page.
 
+## Standalone binary releases
+
+`scripts/release.ts` cross-compiles Kitty Browser with the Bun runtime embedded and publishes deterministic assets to a GitHub Release. The release builder requires Bun 1.4 or newer so the complete target matrix, including Windows ARM64, is available.
+
+Build everything locally without publishing:
+
+```bash
+bun run release:build
+```
+
+Build and upload the release matching the version in `package.json`:
+
+```bash
+bun run release
+```
+
+For an explicit tag:
+
+```bash
+bun run release --tag v0.1.1
+```
+
+The builder updates submodules, installs dependencies, refuses tracked source changes by default, compiles targets sequentially, writes SHA-256 checksums, then creates or updates the matching GitHub Release through an authenticated `gh` CLI. Re-running the same release replaces its assets with `--clobber`; it refuses to reuse a remote tag that points at another commit.
+
+The published binary matrix is:
+
+```text
+kitty-browser-linux-x64          glibc, baseline x64
+kitty-browser-linux-arm64        glibc, ARM64
+kitty-browser-linux-x64-musl     musl, x64
+kitty-browser-linux-arm64-musl   musl, ARM64
+kitty-browser-darwin-x64         Intel macOS, baseline x64
+kitty-browser-darwin-arm64       Apple Silicon
+kitty-browser-windows-x64.exe    Windows x64, baseline
+kitty-browser-windows-arm64.exe  Windows ARM64
+```
+
+Each release also contains `SHA256SUMS`, one `.sha256` file per executable, `kitty-browser-manifest.json`, and the Unix/PowerShell bootstrap selectors. The manifest records OS, architecture, libc where relevant, Bun compile target, byte size, checksum, source commit and release tag, so future installers do not have to infer metadata from filenames.
+
+The Unix bootstrap detects Linux/macOS, x64/ARM64 and glibc/musl, verifies the selected release asset, caches it, and reopens `/dev/tty` before execution so this form can remain interactive:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/kitty-crow/kitty-browser/main/bootstrap/kitty-browser.sh | sh -s -- https://example.com
+```
+
+The PowerShell bootstrap performs the equivalent architecture selection and SHA-256 verification on Windows.
+
+The standalone executable layer is complete, but Chromium is deliberately not embedded in these first-stage release assets yet. The manifest exposes `chromium.strategy = "managed-runtime-planned"`; the next distribution step is to make the bootstrap/runtime provision Kitty Browser's pinned Chromium build automatically. Until that layer is added, the target machine still needs the matching Playwright Chromium runtime available.
+
 ## Dependency boundary
 
 ```text
