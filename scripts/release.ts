@@ -28,6 +28,8 @@ interface BuiltAsset extends ReleaseTarget {
 const ROOT = resolve(import.meta.dir, "..");
 const OUT = join(ROOT, "dist", "release");
 const PACKAGE_PATH = join(ROOT, "package.json");
+const MIN_BUN_MAJOR = 1;
+const MIN_BUN_MINOR = 4;
 
 const TARGETS: readonly ReleaseTarget[] = [
   {
@@ -197,6 +199,14 @@ const commandExists = async (command: string): Promise<boolean> => {
   return result.code === 0;
 };
 
+const assertSupportedBun = (): void => {
+  const [major = 0, minor = 0] = Bun.version.split(".").map((value) => Number.parseInt(value, 10));
+  if (major > MIN_BUN_MAJOR || (major === MIN_BUN_MAJOR && minor >= MIN_BUN_MINOR)) return;
+  throw new Error(
+    `release builder requires Bun >= ${MIN_BUN_MAJOR}.${MIN_BUN_MINOR}.0 for the full target matrix (including Windows ARM64); found ${Bun.version}. Run: bun upgrade`,
+  );
+};
+
 const sha256File = async (path: string): Promise<string> => {
   const hasher = new Bun.CryptoHasher("sha256");
   for await (const chunk of Bun.file(path).stream()) hasher.update(chunk);
@@ -243,6 +253,7 @@ const buildTarget = async (target: ReleaseTarget): Promise<BuiltAsset> => {
   };
 };
 
+assertSupportedBun();
 const options = parseOptions(process.argv.slice(2));
 const pkg = await Bun.file(PACKAGE_PATH).json() as { version?: string };
 if (!pkg.version) throw new Error("package.json has no version");
@@ -258,6 +269,10 @@ if (!options.allowDirty) {
   if (unstaged.code !== 0 || staged.code !== 0) {
     throw new Error("tracked working-tree changes exist; commit them first or pass --allow-dirty");
   }
+}
+
+if (!options.buildOnly && !(await commandExists("gh"))) {
+  throw new Error("gh CLI is required to publish releases");
 }
 
 console.log("==> Preparing repository");
@@ -292,9 +307,11 @@ const checksumLines = assets
   .join("\n");
 await Bun.write(join(OUT, "SHA256SUMS"), `${checksumLines}\n`);
 
-const repository = options.buildOnly
-  ? undefined
-  : (await checked(["gh", "repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"], true)).stdout;
+let repository: string | undefined;
+if (!options.buildOnly) {
+  await checked(["gh", "auth", "status"]);
+  repository = (await checked(["gh", "repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"], true)).stdout;
+}
 
 const manifest = {
   schemaVersion: 1,
@@ -338,9 +355,6 @@ if (options.buildOnly) {
   console.log("==> Build-only mode; skipping GitHub upload");
   process.exit(0);
 }
-
-if (!(await commandExists("gh"))) throw new Error("gh CLI is required to publish releases");
-await checked(["gh", "auth", "status"]);
 
 const remoteTag = await exec(["git", "ls-remote", "origin", `refs/tags/${tag}`], true);
 if (remoteTag.code !== 0) throw new Error(`could not query origin for tag ${tag}`);
