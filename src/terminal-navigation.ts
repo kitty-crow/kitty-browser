@@ -1,4 +1,6 @@
 import type { Page } from "playwright";
+import { setTerminalUrlEditing } from "./browser-shortcuts.ts";
+import { strictNavigationAllows } from "./navigation-policy.ts";
 
 const CONTROLS = " [<] [R] ";
 const BACK_START = 1;
@@ -44,6 +46,7 @@ export class TerminalNavigationBar {
     this.#value = "";
     this.#cursor = 0;
     this.#viewStart = 0;
+    setTerminalUrlEditing(false);
   }
 
   #layout(columns: number, metadata: string): Layout {
@@ -108,6 +111,7 @@ export class TerminalNavigationBar {
         this.#editing = true;
         this.#value = this.#page.url();
         this.#viewStart = 0;
+        setTerminalUrlEditing(true);
       }
       const relative = x - layout.urlStart;
       this.#cursor = Math.min(this.#value.length, layout.urlViewStart + relative);
@@ -128,7 +132,8 @@ export class TerminalNavigationBar {
     if (text === "\r") {
       const target = normaliseUrl(this.#value);
       this.cancel();
-      await this.#page.goto(target, { waitUntil: "domcontentloaded", timeout: 30_000 });
+      if (!strictNavigationAllows(target)) return true;
+      await this.#page.goto(target, { waitUntil: "domcontentloaded", timeout: 30_000 }).catch(() => null);
       return true;
     }
 
