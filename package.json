@@ -8,7 +8,9 @@
   "description": "Standalone real-Chromium terminal browser with Unicode, SIXEL, and Kitty graphics renderers.",
   "scripts": {
     "terminal": "bun src/cli.ts",
-    "terminal:capabilities": "bun src/terminal-capabilities.ts"
+    "terminal:capabilities": "bun src/terminal-capabilities.ts",
+    "release": "bun scripts/release.ts",
+    "release:build": "bun scripts/release.ts --build-only"
   },
   "dependencies": {
     "playwright": "^1.55.0",
