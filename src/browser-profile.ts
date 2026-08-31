@@ -2,6 +2,8 @@ import { chromium, type Browser, type BrowserContext, type Page } from "playwrig
 import { mkdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { installBrowserShortcuts } from "./browser-shortcuts.ts";
+import { browserHomeUrl, installStrictNavigation } from "./navigation-policy.ts";
 import { browserSessionId } from "./terminal-session.ts";
 
 const DEFAULT_PROFILE_ROOT = join(homedir(), ".local", "share", "kitty-browser", "sessions");
@@ -39,8 +41,11 @@ export const launchPersistentBrowser = async (
     ...(options.channel ? { channel: options.channel } : {}),
   });
 
+  await installStrictNavigation(context, browserHomeUrl());
+
   const underlying = context.browser();
   let claimedInitialPage = false;
+  let removeShortcuts: (() => void) | undefined;
 
   const currentBrowser = (): Browser | null => context.browser() ?? underlying;
 
@@ -49,14 +54,20 @@ export const launchPersistentBrowser = async (
     profileDir,
     session,
     async newPage(): Promise<Page> {
+      let page: Page;
       if (!claimedInitialPage) {
         claimedInitialPage = true;
-        const existing = context.pages()[0];
-        if (existing) return existing;
+        page = context.pages()[0] ?? await context.newPage();
+      } else {
+        page = await context.newPage();
       }
-      return await context.newPage();
+      removeShortcuts?.();
+      removeShortcuts = installBrowserShortcuts(page);
+      return page;
     },
     async close(): Promise<void> {
+      removeShortcuts?.();
+      removeShortcuts = undefined;
       await context.close();
     },
     isConnected(): boolean {
