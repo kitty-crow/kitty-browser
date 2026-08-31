@@ -1,8 +1,10 @@
 #!/usr/bin/env bun
-import { chromium, type Page } from "playwright";
+import type { Page } from "playwright";
 import { PNG } from "pngjs";
 import { makeArt } from "../vendor/unicode-art-studio/src/core/art.ts";
 import type { CellColour, Rgb } from "../vendor/unicode-art-studio/src/types.ts";
+import { launchPersistentBrowser } from "./browser-profile.ts";
+import { TerminalNavigationBar } from "./terminal-navigation.ts";
 import {
   MOUSE_DISABLE,
   MOUSE_ENABLE,
@@ -97,16 +99,20 @@ const parseResolution = (raw: string): Resolution => {
 };
 
 const help = (code: number): never => {
-  console.log(`OpenAI Pilot Headed terminal-browser prototype
+  console.log(`kitty-browser Unicode browser
 
 Usage:
-  bun run terminal:prototype -- <url> [options]
+  bun run terminal:unicode -- <url> [options]
 
 Options:
   --fps <n>                  Capture rate, integer 1-60; default 1
-  --resolution <mode>        native, 800x600, 1024x768, 720p, 1366x768,
-                             900p, 1080p, or explicit WIDTHxHEIGHT
-  --no-status                Hide the bottom status bar
+  --session <id>             Persistent Chromium profile/session; default "default"
+  --no-status                Hide the bottom navigation/status bar
+
+Navigation bar:
+  [<]                        Go back
+  [R]                        Refresh
+  URL                        Click to edit; Enter navigates; Esc cancels
 
 Controls:
   Mouse move                 Move/hover the logical pointer
@@ -115,18 +121,14 @@ Controls:
   Wheel / two-finger swipe   Scroll vertically or horizontally
   Right / middle click       Forward the corresponding browser button
   Arrow keys                 Move the logical pointer one Braille cell
-                             At a terminal edge, pan the high-resolution canvas
-                             At a logical canvas edge, scroll Chromium
   Enter                      Activate/click selected page position
   Tab / Shift+Tab            Follow Chromium's native focus order
   PgUp / PgDn                Scroll browser viewport
-  Esc                        Leave text-entry mode
+  Esc                        Leave text-entry or URL-edit mode
   Ctrl+C                     Quit
 
-Fixed resolution modes keep Chromium at that actual pixel viewport and render it as a
-logical Braille canvas (2x4 browser pixels per Braille cell). The physical terminal is
-only a movable window into that canvas. Touch/trackpad behaviour depends on the client
-terminal translating gestures into SGR mouse drag or wheel reports; both forms are handled.`);
+Each named session is a real persistent Chromium user-data directory. Chromium therefore
+owns cookies, localStorage, sessionStorage semantics, IndexedDB, cache and site state.`);
   process.exit(code);
 };
 
@@ -434,10 +436,11 @@ const visibleTextCells = async (page: Page, geometry: Geometry): Promise<TextCel
 };
 
 const args = parse(process.argv.slice(2));
-if (!process.stdin.isTTY || !process.stdout.isTTY) throw new Error("terminal-browser requires an interactive TTY");
+if (!process.stdin.isTTY || !process.stdout.isTTY) throw new Error("terminal:unicode requires an interactive TTY");
 
-const browser = await chromium.launch({ headless: true });
+const browser = await launchPersistentBrowser({ headless: true });
 const page = await browser.newPage();
+const navigation = new TerminalNavigationBar(page);
 let geometry = geometryFor(terminalSize(args.status), args.resolution);
 await page.setViewportSize({ width: geometry.browserWidth, height: geometry.browserHeight });
 await page.goto(args.url, { waitUntil: "domcontentloaded", timeout: 30_000 });
@@ -465,11 +468,10 @@ const beginShutdown = (): void => {
   if (shuttingDown) return;
   shuttingDown = true;
   running = false;
+  navigation.cancel();
   inputMode = false;
   swipe = undefined;
   auxiliaryButton = undefined;
-  // Stop the terminal producing any new SGR mouse reports immediately. Cleanup
-  // repeats this after leaving the alternate screen as a defensive reset.
   process.stdout.write(MOUSE_DISABLE);
 };
 
@@ -484,6 +486,7 @@ const ensureCursorVisible = (): void => {
 
 page.on("framenavigated", (frameHandle) => {
   if (frameHandle !== page.mainFrame() || shuttingDown) return;
+  navigation.cancel();
   inputMode = false;
   swipe = undefined;
   auxiliaryButton = undefined;
@@ -500,14 +503,15 @@ browser.on("disconnected", beginShutdown);
 
 const pointerHighlighted = (): boolean => Math.floor(Math.max(0, frame - 1) / args.fps) % 2 === 0;
 
-const status = (): string => {
-  const mode = inputMode ? "INPUT" : "NAV";
+const statusMetadata = (): string => {
+  const mode = navigation.editing ? "URL" : inputMode ? "INPUT" : "NAV";
   const resolution = args.resolution.name === "native"
     ? `native ${geometry.browserWidth}x${geometry.browserHeight}`
     : `${args.resolution.name} ${geometry.browserWidth}x${geometry.browserHeight}`;
-  const raw = ` ${page.url()}  ${mode}  ${args.fps}fps  ${resolution}  canvas ${geometry.logicalColumns}x${geometry.logicalRows}  view ${viewX},${viewY}  pointer ${cursorX},${cursorY} `;
-  return raw.length > geometry.columns ? raw.slice(0, geometry.columns) : raw.padEnd(geometry.columns, " ");
+  return `${mode}  ${args.fps}fps  unicode  session:${browser.session}  ${resolution}  pointer ${cursorX},${cursorY}`;
 };
+
+const status = (): string => navigation.render(geometry.columns, statusMetadata());
 
 const paintStatus = (full = false): void => {
   if (!args.status || shuttingDown) return;
@@ -603,8 +607,22 @@ const pointFromMouse = async (x: number, y: number): Promise<boolean> => {
   return true;
 };
 
+const handleStatusMouse = async (event: TerminalMouseEvent): Promise<boolean> => {
+  if (!args.status || event.y !== geometry.rows) return false;
+  if (event.kind === "press" && (!event.button || event.button === "left")) {
+    inputMode = false;
+    swipe = undefined;
+    auxiliaryButton = undefined;
+    await navigation.click(event.x, geometry.columns, statusMetadata());
+    lastStatus = "";
+    paintStatus(true);
+  }
+  return true;
+};
+
 const handleMouse = async (event: TerminalMouseEvent): Promise<void> => {
-  if (shuttingDown || !(await pointFromMouse(event.x, event.y))) return;
+  if (shuttingDown || await handleStatusMouse(event)) return;
+  if (!(await pointFromMouse(event.x, event.y))) return;
 
   if (event.kind === "wheel") {
     swipe = undefined;
@@ -718,6 +736,13 @@ const key = async (text: string): Promise<void> => {
   }
   if (shuttingDown) return;
 
+  if (navigation.editing) {
+    await navigation.handleKey(text);
+    lastStatus = "";
+    paintStatus(true);
+    return;
+  }
+
   if (inputMode) {
     if (text === "\x1b") {
       inputMode = false;
@@ -770,6 +795,7 @@ const onStdinData = (chunk: string): void => {
           return;
         }
         inputMode = false;
+        navigation.cancel();
         swipe = undefined;
         auxiliaryButton = undefined;
         lastStatus = "";
@@ -798,21 +824,13 @@ const cleanup = async (): Promise<void> => {
   cleanedUp = true;
   beginShutdown();
 
-  // Let any operation that was already in flight finish while the browser still
-  // exists. Everything queued behind shutdown becomes a no-op.
   await inputQueue.catch(() => undefined);
-
-  // Mouse reports can already be travelling through the PTY/SSH stream when
-  // tracking is disabled. Consume them here so they cannot become shell input.
   await drainPendingInput();
 
   if (process.stdin.isTTY) process.stdin.setRawMode(false);
   process.stdin.pause();
   if (browser.isConnected()) await browser.close().catch(() => undefined);
 
-  // Disable tracking on both sides of the alternate-screen transition. Some
-  // terminals restore private modes with the primary screen; this guarantees
-  // the shell always receives an ordinary TTY.
   process.stdout.write(`${MOUSE_DISABLE}\x1b[0m\x1b[?7h\x1b[?25h\x1b[?1049l${MOUSE_DISABLE}\x1b[0m\x1b[?7h\x1b[?25h`);
 };
 
