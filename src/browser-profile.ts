@@ -8,6 +8,7 @@ import { browserHomeUrl, installStrictNavigation } from "./navigation-policy.ts"
 import { browserSessionId } from "./terminal-session.ts";
 
 const DEFAULT_PROFILE_ROOT = join(homedir(), ".local", "share", "kitty-browser", "sessions");
+const HIDDEN_WINDOW_POSITION = "--window-position=-32000,-32000";
 
 export const profileRoot = (): string =>
   process.env.KITTY_BROWSER_PROFILE_ROOT?.trim() || DEFAULT_PROFILE_ROOT;
@@ -39,7 +40,8 @@ export const launchPersistentBrowser = async (
 
   const executablePath = await bundledChromiumExecutable();
   const context = await chromium.launchPersistentContext(profileDir, {
-    headless: options.headless,
+    headless: false,
+    args: [HIDDEN_WINDOW_POSITION],
     ...(executablePath
       ? { executablePath }
       : options.channel
