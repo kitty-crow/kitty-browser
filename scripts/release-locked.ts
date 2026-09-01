@@ -8,6 +8,7 @@ const ROOT = resolve(import.meta.dir, "..");
 const DIST = join(ROOT, "dist");
 const LOCK_DIR = join(DIST, ".kitty-browser-release.lock");
 const OWNER_PATH = join(LOCK_DIR, "owner.json");
+const RELEASE_LOCK_ENV = "KITTY_BROWSER_RELEASE_LOCKED";
 
 interface LockOwner {
   readonly pid: number;
@@ -55,8 +56,6 @@ const acquire = async (): Promise<void> => {
       const code = (error as NodeJS.ErrnoException).code;
       if (code !== "EEXIST") throw error;
 
-      // Give a concurrently-starting owner a moment to write owner.json before
-      // deciding whether an existing lock is stale.
       await Bun.sleep(150);
       const owner = await readOwner();
       if (owner && processAlive(owner.pid)) {
@@ -85,6 +84,7 @@ const releaseLock = (): void => {
 
 await acquire();
 ownsLock = true;
+process.env[RELEASE_LOCK_ENV] = "1";
 
 process.once("exit", releaseLock);
 process.once("SIGINT", () => {
@@ -103,5 +103,6 @@ process.once("SIGHUP", () => {
 try {
   await import("./release.ts");
 } finally {
+  delete process.env[RELEASE_LOCK_ENV];
   releaseLock();
 }
