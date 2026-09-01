@@ -10,6 +10,7 @@ const LOCK_DIR = join(DIST, ".kitty-browser-release.lock");
 const OWNER_PATH = join(LOCK_DIR, "owner.json");
 const RELEASE_LOCK_ENV = "KITTY_BROWSER_RELEASE_LOCKED";
 const PLAYWRIGHT_PATCH_ENV = "KITTY_BROWSER_RELEASE_PATCH_PLAYWRIGHT";
+const GZIP_ENV = "GZIP";
 
 interface LockOwner {
   readonly pid: number;
@@ -83,10 +84,13 @@ const releaseLock = (): void => {
   }
 };
 
+const previousGzip = process.env[GZIP_ENV];
+
 await acquire();
 ownsLock = true;
 process.env[RELEASE_LOCK_ENV] = "1";
 process.env[PLAYWRIGHT_PATCH_ENV] = "1";
+process.env[GZIP_ENV] = "-9";
 
 process.once("exit", releaseLock);
 process.once("SIGINT", () => {
@@ -107,5 +111,7 @@ try {
 } finally {
   delete process.env[RELEASE_LOCK_ENV];
   delete process.env[PLAYWRIGHT_PATCH_ENV];
+  if (previousGzip === undefined) delete process.env[GZIP_ENV];
+  else process.env[GZIP_ENV] = previousGzip;
   releaseLock();
 }
