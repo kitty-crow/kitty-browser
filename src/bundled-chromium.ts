@@ -7,11 +7,17 @@ const CHROMIUM_ENV = "KITTY_BROWSER_CHROMIUM_EXECUTABLE";
 const platformRelativeExecutable = (): string[] | undefined => {
   switch (process.platform) {
     case "linux":
-      return ["chromium", "chrome-linux", "chrome"];
+      return process.arch === "arm64"
+        ? ["chromium", "chrome-linux-arm64", "chrome"]
+        : ["chromium", "chrome-linux64", "chrome"];
     case "darwin":
-      return ["chromium", "chrome-mac", "Chromium.app", "Contents", "MacOS", "Chromium"];
+      return process.arch === "arm64"
+        ? ["chromium", "chrome-mac-arm64", "Google Chrome for Testing.app", "Contents", "MacOS", "Google Chrome for Testing"]
+        : ["chromium", "chrome-mac-x64", "Google Chrome for Testing.app", "Contents", "MacOS", "Google Chrome for Testing"];
     case "win32":
-      return ["chromium", "chrome-win", "chrome.exe"];
+      // Playwright's Chrome for Testing distribution is win64 on Windows,
+      // including Windows-on-ARM where x64 emulation is used.
+      return ["chromium", "chrome-win64", "chrome.exe"];
     default:
       return undefined;
   }
