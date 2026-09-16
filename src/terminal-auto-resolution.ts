@@ -39,19 +39,23 @@ export const freezeTerminalGeometry = (): void => {
   const rows = Math.max(5, capturedDimension(AUTO_ROWS_ENV, process.stdout.rows ?? 40));
 
   // Raster auto-resolution is a startup snapshot. Shadow the TTY's live
-  // column/row getters with the original launch dimensions so renderer resize
-  // callbacks keep seeing the same geometry for the whole run. The snapshot
-  // is carried in the environment across the Xvfb guard re-exec.
+  // column/row values with the original launch dimensions so renderer resize
+  // callbacks keep seeing the same geometry for the whole run. Bun's TTY
+  // implementation assigns to these properties when SIGWINCH arrives, so the
+  // no-op setters are intentional: they preserve the snapshot without making
+  // the stream properties effectively readonly and crashing Bun's resize path.
   Object.defineProperties(process.stdout, {
     columns: {
       configurable: true,
       enumerable: true,
       get: () => columns,
+      set: (_value: number) => {},
     },
     rows: {
       configurable: true,
       enumerable: true,
       get: () => rows,
+      set: (_value: number) => {},
     },
   });
 };
