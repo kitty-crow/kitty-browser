@@ -9,6 +9,7 @@ import { browserSessionId } from "./terminal-session.ts";
 
 const DEFAULT_PROFILE_ROOT = join(homedir(), ".local", "share", "kitty-browser", "sessions");
 const HIDDEN_WINDOW_POSITION = "--window-position=-32000,-32000";
+const VIRTUAL_WINDOW_POSITION = "--window-position=0,0";
 const VIRTUAL_DISPLAY_ENV = "KITTY_BROWSER_VIRTUAL_DISPLAY";
 
 export const profileRoot = (): string =>
@@ -40,13 +41,16 @@ export const launchPersistentBrowser = async (
   await mkdir(profileDir, { recursive: true });
 
   const executablePath = await bundledChromiumExecutable();
-  const args = [HIDDEN_WINDOW_POSITION];
+  const virtualDisplay = process.platform === "linux" && process.env[VIRTUAL_DISPLAY_ENV] === "1";
+  const args = [virtualDisplay ? VIRTUAL_WINDOW_POSITION : HIDDEN_WINDOW_POSITION];
 
   // Kitty Browser intentionally uses real headed Chromium for raster renderers.
-  // On headless servers the guard re-execs us under Xvfb. Xvfb supplies the X
-  // display but not a hardware-backed EGL/OpenGL context, so use Chromium's
+  // On headless servers the guard re-execs us under Xvfb. Keep the Chromium
+  // window inside that virtual framebuffer so headed painting/screenshot capture
+  // remains active; the Xvfb display itself is already invisible to the user.
+  // Xvfb does not provide a hardware-backed EGL/OpenGL context, so use Chromium's
   // CPU-only SwANGLE/SwiftShader driver for that virtual-display case only.
-  if (process.platform === "linux" && process.env[VIRTUAL_DISPLAY_ENV] === "1") {
+  if (virtualDisplay) {
     args.push("--use-gl=angle", "--use-angle=swiftshader");
   }
 
