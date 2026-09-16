@@ -30,13 +30,16 @@ const ensureVirtualDisplay = async (): Promise<void> => {
   };
   let child: ReturnType<typeof Bun.spawn>;
   try {
+    // Xvfb must be the outer wrapper so the D-Bus daemon itself starts with
+    // DISPLAY set. Services later activated by that session bus (for example
+    // xdg-desktop-portal-gtk) then inherit the same virtual display.
     child = Bun.spawn([
-      "dbus-run-session",
-      "--",
       "xvfb-run",
       "-a",
       "-s",
       "-screen 0 1920x1080x24 -nolisten tcp",
+      "dbus-run-session",
+      "--",
       ...xvfbReexecCommand(import.meta.path, "kitty"),
     ], {
       stdin: "inherit",
