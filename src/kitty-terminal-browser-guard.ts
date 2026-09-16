@@ -31,6 +31,8 @@ const ensureVirtualDisplay = async (): Promise<void> => {
   let child: ReturnType<typeof Bun.spawn>;
   try {
     child = Bun.spawn([
+      "dbus-run-session",
+      "--",
       "xvfb-run",
       "-a",
       "-s",
@@ -44,7 +46,7 @@ const ensureVirtualDisplay = async (): Promise<void> => {
     });
   } catch (error) {
     throw new Error(
-      `terminal:kitty needs Xvfb to run real headed Chromium without a graphical display. Install xvfb, or provide DISPLAY. ${error instanceof Error ? error.message : String(error)}`,
+      `terminal:kitty needs Xvfb and a D-Bus session to run real headed Chromium without a desktop session. Install xvfb and dbus-daemon, or provide DISPLAY. ${error instanceof Error ? error.message : String(error)}`,
     );
   }
 
