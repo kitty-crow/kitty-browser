@@ -18,11 +18,16 @@ const KITTY_QUERY = `\x1b_Gi=${KITTY_QUERY_ID},s=1,v=1,a=q,t=d,f=24;AAAA\x1b\\`;
 const DEVICE_ATTRIBUTES_QUERY = "\x1b[c";
 const PROBE_TIMEOUT_MS = 750;
 const XVFB_REEXEC = "OPENAI_PILOT_XVFB_REEXEC";
+const VIRTUAL_DISPLAY_ENV = "KITTY_BROWSER_VIRTUAL_DISPLAY";
 
 const ensureVirtualDisplay = async (): Promise<void> => {
   if (process.platform !== "linux" || process.env.DISPLAY || process.env[XVFB_REEXEC] === "1") return;
 
-  const env = { ...process.env, [XVFB_REEXEC]: "1" };
+  const env = {
+    ...process.env,
+    [XVFB_REEXEC]: "1",
+    [VIRTUAL_DISPLAY_ENV]: "1",
+  };
   let child: ReturnType<typeof Bun.spawn>;
   try {
     child = Bun.spawn([
