@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 import { xvfbReexecCommand } from "./runtime-exec.ts";
 import { consumeBrowserSessionArg } from "./terminal-session.ts";
+import { consumeAudioWebSocketArg } from "./audio-options.ts";
 
 const help = (): never => {
   console.log(`kitty-browser Unicode renderer
@@ -46,6 +47,7 @@ const ensureVirtualDisplay = async (): Promise<void> => {
 
 if (process.argv.includes("--help") || process.argv.includes("-h")) help();
 consumeBrowserSessionArg();
+consumeAudioWebSocketArg();
 
 for (const arg of process.argv) {
   if (arg === "--resolution" || arg === "-r") {
