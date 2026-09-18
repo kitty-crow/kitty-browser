@@ -45,15 +45,10 @@ export const launchPersistentBrowser = async (
   const args = [virtualDisplay ? VIRTUAL_WINDOW_POSITION : HIDDEN_WINDOW_POSITION];
 
   // Kitty Browser intentionally uses real headed Chromium for raster renderers.
-  // On headless servers the guard re-execs us under Xvfb. Keep the Chromium
-  // window inside that virtual framebuffer so headed painting/screenshot capture
-  // remains active; the Xvfb display itself is already invisible to the user.
-  // Xvfb has no hardware GPU. Let headed Chrome use its software raster path
-  // instead of forcing ANGLE/SwiftShader, which can produce black compositor
-  // frames under Chrome for Testing on a virtual X display.
-  if (virtualDisplay) {
-    args.push("--disable-gpu", "--enable-software-rasterizer");
-  }
+  // On displayless Linux the guards re-exec us under Xvfb and place the real
+  // headed window inside that virtual framebuffer. Do not disable Chromium's
+  // GPU/compositor process here: on GPU-less Xvfb Chromium can select its own
+  // software path, while --disable-gpu can leave captured compositor frames black.
 
   const context = await chromium.launchPersistentContext(profileDir, {
     headless: false,
