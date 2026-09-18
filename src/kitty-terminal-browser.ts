@@ -2,6 +2,7 @@
 import type { Page } from "playwright";
 import { launchPersistentBrowser } from "./browser-profile.ts";
 import { TerminalNavigationBar } from "./terminal-navigation.ts";
+import { dumpFirstRasterFrame } from "./raster-diagnostic.ts";
 import {
   MOUSE_DISABLE,
   MOUSE_ENABLE,
@@ -496,6 +497,7 @@ const capture = async (): Promise<void> => {
     await ensurePointerOverlay();
     if (shuttingDown) return;
     const screenshot = await page.screenshot({ type: "png" });
+    await dumpFirstRasterFrame(screenshot, "kitty", page.url());
     await stdout(kittyFrame(screenshot, geometry));
     paintStatus();
     frame += 1;
