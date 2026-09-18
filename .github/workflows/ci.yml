@@ -26,6 +26,9 @@ jobs:
       - name: Install dependencies
         run: bun install
 
+      - name: Compile audio-enabled Kitty renderer
+        run: bun build src/kitty-terminal-browser.ts --target=bun --outdir=/tmp/kitty-browser-ci
+
       - name: Install Chromium
         run: bunx playwright install --with-deps chromium
 

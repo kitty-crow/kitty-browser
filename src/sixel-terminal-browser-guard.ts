@@ -1,12 +1,14 @@
 #!/usr/bin/env bun
 import { xvfbReexecCommand } from "./runtime-exec.ts";
 import { consumeBrowserSessionArg } from "./terminal-session.ts";
+import { consumeAudioWebSocketArg } from "./audio-options.ts";
 import {
   autoResolutionEnabled,
   freezeTerminalGeometry,
 } from "./terminal-auto-resolution.ts";
 
 consumeBrowserSessionArg();
+consumeAudioWebSocketArg();
 
 const forced = process.env.KITTY_BROWSER_FORCE_SIXEL === "1"
   || process.env.OPENAI_PILOT_FORCE_SIXEL === "1";

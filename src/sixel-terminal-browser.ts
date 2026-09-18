@@ -2,8 +2,11 @@
 import type { Page } from "playwright";
 import { PNG } from "pngjs";
 import { launchPersistentBrowser } from "./browser-profile.ts";
+import { consumeAudioWebSocketArg } from "./audio-options.ts";
+import { tryOpenChromiumAudioStream } from "./audio-stream.ts";
 import { TerminalNavigationBar } from "./terminal-navigation.ts";
 import { dumpFirstRasterFrame } from "./raster-diagnostic.ts";
+import { mediaFrameMarker, midpointNs, monotonicNs } from "./media-sync.ts";
 import {
   MOUSE_DISABLE,
   MOUSE_ENABLE,
@@ -91,6 +94,8 @@ Options:
   --fps <n>                  Capture rate, integer 1-60; default 1
   --resolution <mode>        native, named preset, or any positive WIDTHxHEIGHT
   --session <id>             Persistent Chromium profile/session; default "default"
+  --audio-ws <url>            Stream 48 kHz stereo PCM audio to a WebSocket
+  --no-audio                  Disable configured audio streaming
   --no-status                Hide the bottom navigation/status bar
 
 Navigation bar:
@@ -314,10 +319,15 @@ const activeRect = async (page: Page): Promise<{ x: number; y: number; width: nu
   }
 };
 
+const audioWs = consumeAudioWebSocketArg();
 const args = parse(process.argv.slice(2));
 if (!process.stdin.isTTY || !process.stdout.isTTY) throw new Error("terminal:sixel requires an interactive TTY");
 
-const browser = await launchPersistentBrowser({ headless: false, channel: "chromium" });
+const audio = await tryOpenChromiumAudioStream(audioWs);
+const browser = await launchPersistentBrowser({ headless: false, channel: "chromium", ...(audio ? { env: audio.browserEnv } : {}) }).catch(async error => {
+  await audio?.close();
+  throw error;
+});
 const page = await browser.newPage();
 const navigation = new TerminalNavigationBar(page);
 let geometry = geometryFor(terminalSize(args.status), args.resolution);
@@ -361,7 +371,7 @@ const statusMetadata = (): string => {
   const resolution = args.resolution.name === "native"
     ? `native ${geometry.browserWidth}x${geometry.browserHeight}`
     : `${args.resolution.name} ${geometry.browserWidth}x${geometry.browserHeight}`;
-  return `${mode}  ${args.fps}fps  sixel-256  session:${browser.session}  ${resolution}  pointer ${cursorX},${cursorY}`;
+  return `${mode}  ${args.fps}fps  sixel-256  session:${browser.session}  audio:${audio ? "on" : "off"}  ${resolution}  pointer ${cursorX},${cursorY}`;
 };
 
 const status = (): string => navigation.render(geometry.columns, statusMetadata());
@@ -566,9 +576,11 @@ const capture = async (): Promise<void> => {
     if (shuttingDown) return;
     await ensurePointerOverlay();
     if (shuttingDown) return;
+    const captureStartedNs = monotonicNs();
     const screenshot = await page.screenshot({ type: "png" });
+    const captureTimestampNs = midpointNs(captureStartedNs, monotonicNs());
     await dumpFirstRasterFrame(screenshot, "sixel", page.url());
-    await stdout(sixelFrame(screenshot));
+    await stdout(`${mediaFrameMarker(frame, args.fps, captureTimestampNs)}${sixelFrame(screenshot)}`);
     paintStatus();
     frame += 1;
   } catch (error) {
@@ -697,6 +709,7 @@ const cleanup = async (): Promise<void> => {
   if (process.stdin.isTTY) process.stdin.setRawMode(false);
   process.stdin.pause();
   if (browser.isConnected()) await browser.close().catch(() => undefined);
+  await audio?.close();
   process.stdout.write(`${MOUSE_DISABLE}\x1b[0m\x1b[?7h\x1b[?25h\x1b[?1049l${MOUSE_DISABLE}\x1b[0m\x1b[?7h\x1b[?25h`);
 };
 

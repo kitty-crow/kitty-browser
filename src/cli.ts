@@ -1,5 +1,6 @@
 #!/usr/bin/env bun
 import { consumeBrowserSessionArg } from "./terminal-session.ts";
+import { consumeAudioWebSocketArg } from "./audio-options.ts";
 import {
   captureTerminalGeometry,
   setAutoResolutionEnabled,
@@ -27,6 +28,8 @@ Options:
   --strict                   Restrict top-level navigation to the launch URL's registrable domain
   --fps <n>                  Capture rate, integer 1-24; default 12
   --resolution <mode>        SIXEL/Kitty: auto (default), native, named preset, or WIDTHxHEIGHT
+  --audio-ws <url>           Stream Chromium PCM audio to ws:// or wss://
+  --no-audio                 Disable audio even when KITTY_BROWSER_AUDIO_WS is set
   --no-status                Hide the bottom navigation/status bar
   -h, --help                 Show this help
 
@@ -166,15 +169,15 @@ const configureResolutionMode = (renderer: Renderer, argv = process.argv): boole
 };
 
 const findLaunchUrl = (argv = process.argv): string | undefined => {
-  const takesValue = new Set(["--fps", "--resolution", "-r"]);
+  const takesValue = new Set(["--fps", "--resolution", "-r", "--audio-ws"]);
   for (let i = 2; i < argv.length; i += 1) {
     const value = argv[i]!;
     if (takesValue.has(value)) {
       i += 1;
       continue;
     }
-    if (value.startsWith("--fps=") || value.startsWith("--resolution=")) continue;
-    if (value === "--no-status") continue;
+    if (value.startsWith("--fps=") || value.startsWith("--resolution=") || value.startsWith("--audio-ws=")) continue;
+    if (value === "--no-status" || value === "--no-audio") continue;
     if (value.startsWith("-")) continue;
     return normaliseUrl(value);
   }
@@ -185,6 +188,7 @@ if (process.argv.includes("--help") || process.argv.includes("-h")) help(0);
 
 const renderer = consumeRendererArg();
 consumeBrowserSessionArg();
+consumeAudioWebSocketArg();
 consumeStrictArg();
 validateAndDefaultFpsArg();
 const autoResolution = configureResolutionMode(renderer);

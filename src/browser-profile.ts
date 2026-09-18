@@ -31,6 +31,7 @@ export interface PersistentBrowser {
 export interface PersistentBrowserOptions {
   readonly headless: boolean;
   readonly channel?: string;
+  readonly env?: Readonly<Record<string, string>>;
 }
 
 export const launchPersistentBrowser = async (
@@ -50,9 +51,15 @@ export const launchPersistentBrowser = async (
   // GPU/compositor process here: on GPU-less Xvfb Chromium can select its own
   // software path, while --disable-gpu can leave captured compositor frames black.
 
+  const launchEnv = Object.fromEntries(
+    Object.entries({ ...process.env, ...(options.env ?? {}) })
+      .filter((entry): entry is [string, string] => typeof entry[1] === "string"),
+  );
+
   const context = await chromium.launchPersistentContext(profileDir, {
     headless: false,
     args,
+    env: launchEnv,
     ...(executablePath
       ? { executablePath }
       : options.channel
