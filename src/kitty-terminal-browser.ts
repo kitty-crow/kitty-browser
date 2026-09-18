@@ -5,6 +5,7 @@ import { consumeAudioWebSocketArg } from "./audio-options.ts";
 import { tryOpenChromiumAudioStream } from "./audio-stream.ts";
 import { TerminalNavigationBar } from "./terminal-navigation.ts";
 import { dumpFirstRasterFrame } from "./raster-diagnostic.ts";
+import { mediaFrameMarker, midpointNs, monotonicNs } from "./media-sync.ts";
 import {
   MOUSE_DISABLE,
   MOUSE_ENABLE,
@@ -505,9 +506,11 @@ const capture = async (): Promise<void> => {
     if (shuttingDown) return;
     await ensurePointerOverlay();
     if (shuttingDown) return;
+    const captureStartedNs = monotonicNs();
     const screenshot = await page.screenshot({ type: "png" });
+    const captureTimestampNs = midpointNs(captureStartedNs, monotonicNs());
     await dumpFirstRasterFrame(screenshot, "kitty", page.url());
-    await stdout(kittyFrame(screenshot, geometry));
+    await stdout(`${mediaFrameMarker(frame, args.fps, captureTimestampNs)}${kittyFrame(screenshot, geometry)}`);
     paintStatus();
     frame += 1;
   } catch (error) {
