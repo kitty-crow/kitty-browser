@@ -13,26 +13,12 @@ const profileRoot = await mkdtemp(join(tmpdir(), "kitty-browser-raster-smoke-"))
 process.env.KITTY_BROWSER_PROFILE_ROOT = profileRoot;
 process.env.KITTY_BROWSER_VIRTUAL_DISPLAY = process.platform === "linux" ? "1" : "0";
 
-const browser = await launchPersistentBrowser({ headless: false });
+const browser = await launchPersistentBrowser({ headless: false, channel: "chromium" });
 
 try {
   const page = await browser.newPage();
   await page.setViewportSize({ width: 640, height: 480 });
-  await page.setContent(`
-    <!doctype html>
-    <html>
-      <body style="margin:0;background:rgb(17,34,51);overflow:hidden">
-        <div style="
-          position:fixed;
-          left:220px;
-          top:140px;
-          width:200px;
-          height:200px;
-          background:rgb(255,0,255);
-        "></div>
-      </body>
-    </html>
-  `);
+  await page.goto("data:text/html,<body style=%22margin:0;background:rgb(17,34,51);overflow:hidden%22><div style=%22position:fixed;left:220px;top:140px;width:200px;height:200px;background:rgb(255,0,255)%22></div></body>", { waitUntil: "domcontentloaded" });
 
   await page.evaluate(async () => {
     await new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
