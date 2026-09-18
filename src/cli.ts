@@ -12,7 +12,7 @@ const RENDERERS = new Set<Renderer>(["auto", "unicode", "sixel", "kitty"]);
 const STRICT_ENV = "KITTY_BROWSER_STRICT";
 const HOME_ENV = "KITTY_BROWSER_HOME_URL";
 const MIN_FPS = 1;
-const MAX_FPS = 24;
+const MAX_FPS = 48;
 const DEFAULT_FPS = 12;
 
 const help = (code = 0): never => {
@@ -26,7 +26,7 @@ Options:
   --render <mode>            auto, unicode, sixel, or kitty; default auto
   --session <id>             Persistent Chromium session/profile; default "default"
   --strict                   Restrict top-level navigation to the launch URL's registrable domain
-  --fps <n>                  Capture rate, integer 1-24; default 12
+  --fps <n>                  Capture rate, integer 1-48; default 12
   --resolution <mode>        SIXEL/Kitty: auto (default), native, named preset, or WIDTHxHEIGHT
   --audio-ws <url>           Stream Chromium PCM audio to ws:// or wss://
   --no-audio                 Disable audio even when KITTY_BROWSER_AUDIO_WS is set
