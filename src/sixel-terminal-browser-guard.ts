@@ -15,11 +15,12 @@ const termProgram = process.env.TERM_PROGRAM ?? "";
 const DEVICE_ATTRIBUTES_QUERY = "\x1b[c";
 const PROBE_TIMEOUT_MS = 750;
 const XVFB_REEXEC = "KITTY_BROWSER_SIXEL_XVFB_REEXEC";
+const VIRTUAL_DISPLAY_ENV = "KITTY_BROWSER_VIRTUAL_DISPLAY";
 
 const ensureVirtualDisplay = async (): Promise<void> => {
   if (process.platform !== "linux" || process.env.DISPLAY || process.env[XVFB_REEXEC] === "1") return;
 
-  const env = { ...process.env, [XVFB_REEXEC]: "1" };
+  const env = { ...process.env, [XVFB_REEXEC]: "1", [VIRTUAL_DISPLAY_ENV]: "1" };
   let child: ReturnType<typeof Bun.spawn>;
   try {
     child = Bun.spawn([
@@ -27,6 +28,8 @@ const ensureVirtualDisplay = async (): Promise<void> => {
       "-a",
       "-s",
       "-screen 0 1920x1080x24 -nolisten tcp",
+      "dbus-run-session",
+      "--",
       ...xvfbReexecCommand(import.meta.path, "sixel"),
     ], {
       stdin: "inherit",
@@ -36,7 +39,7 @@ const ensureVirtualDisplay = async (): Promise<void> => {
     });
   } catch (error) {
     throw new Error(
-      `terminal:sixel needs Xvfb to run real headed Chromium without a graphical display. Install xvfb, or provide DISPLAY. ${error instanceof Error ? error.message : String(error)}`,
+      `terminal:sixel needs Xvfb and a D-Bus session to run real headed Chromium without a desktop session. Install xvfb and dbus-daemon, or provide DISPLAY. ${error instanceof Error ? error.message : String(error)}`,
     );
   }
 
