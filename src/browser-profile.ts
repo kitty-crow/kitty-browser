@@ -48,10 +48,11 @@ export const launchPersistentBrowser = async (
   // On headless servers the guard re-execs us under Xvfb. Keep the Chromium
   // window inside that virtual framebuffer so headed painting/screenshot capture
   // remains active; the Xvfb display itself is already invisible to the user.
-  // Xvfb does not provide a hardware-backed EGL/OpenGL context, so use Chromium's
-  // CPU-only SwANGLE/SwiftShader driver for that virtual-display case only.
+  // Xvfb has no hardware GPU. Let headed Chrome use its software raster path
+  // instead of forcing ANGLE/SwiftShader, which can produce black compositor
+  // frames under Chrome for Testing on a virtual X display.
   if (virtualDisplay) {
-    args.push("--use-gl=angle", "--use-angle=swiftshader");
+    args.push("--disable-gpu", "--enable-software-rasterizer");
   }
 
   const context = await chromium.launchPersistentContext(profileDir, {
