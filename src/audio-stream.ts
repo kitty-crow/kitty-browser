@@ -83,6 +83,18 @@ export const openChromiumAudioStream = async (url: string): Promise<ChromiumAudi
     throw new Error("Chromium audio streaming needs pactl and parec (Debian/Ubuntu package: pulseaudio-utils)");
   }
 
+  // Headless servers often have PulseAudio utilities installed without a
+  // running user daemon. Start one on demand when the server binary exists.
+  await commandText([pactl, "info"]).catch(async () => {
+    const pulseaudio = Bun.which("pulseaudio");
+    if (!pulseaudio) {
+      throw new Error("PulseAudio is not running; install/start pulseaudio (plus pulseaudio-utils)");
+    }
+    await commandText([pulseaudio, "--start", "--exit-idle-time=60"]);
+    await Bun.sleep(150);
+    await commandText([pactl, "info"]);
+  });
+
   const sink = `kitty_browser_${process.pid}_${Math.random().toString(36).slice(2, 8)}`;
   const moduleId = await commandText([
     pactl,
@@ -112,7 +124,7 @@ export const openChromiumAudioStream = async (url: string): Promise<ChromiumAudi
       "--latency-msec=10",
     ], {
       stdout: "pipe",
-      stderr: "pipe",
+      stderr: "inherit",
     });
 
     const activeWs = ws;
