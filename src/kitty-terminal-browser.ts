@@ -206,7 +206,7 @@ const kittyFrame = (png: Uint8Array, geometry: Geometry): string => {
     const chunk = encoded.slice(offset, offset + KITTY_CHUNK);
     const more = offset + KITTY_CHUNK < encoded.length ? 1 : 0;
     const control = offset === 0
-      ? `a=T,f=100,i=${KITTY_IMAGE_ID},p=${KITTY_PLACEMENT_ID},c=${geometry.columns},r=${geometry.rows},z=-1,C=1,q=2,N=1,m=${more}`
+      ? `a=T,f=100,i=${KITTY_IMAGE_ID},p=${KITTY_PLACEMENT_ID},c=${geometry.columns},r=${geometry.rows},z=0,C=1,q=2,N=1,m=${more}`
       : `q=2,m=${more}`;
     output += `\x1b_G${control};${chunk}\x1b\\`;
   }
