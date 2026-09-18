@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+// Runtime regression check for headed Chromium screenshot capture under Xvfb.
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
