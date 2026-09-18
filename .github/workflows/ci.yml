@@ -1,0 +1,35 @@
+name: CI
+
+on:
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  raster-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
+
+      - name: Install system display dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb xauth dbus-daemon
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Install Chromium
+        run: bunx playwright install --with-deps chromium
+
+      - name: Headed raster screenshot smoke test
+        run: |
+          xvfb-run -a \
+            -s "-screen 0 1920x1080x24 -nolisten tcp" \
+            dbus-run-session -- \
+            env KITTY_BROWSER_VIRTUAL_DISPLAY=1 \
+            bun scripts/raster-smoke.ts
