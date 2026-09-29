@@ -1,16 +1,42 @@
-import { chromium, type Browser, type BrowserContext, type Page } from "playwright";
+import { chromium, type Browser, type BrowserContext, type Mouse, type Page } from "playwright";
 import { mkdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { installBrowserShortcuts } from "./browser-shortcuts.ts";
 import { bundledChromiumExecutable } from "./bundled-chromium.ts";
 import { browserHomeUrl, installStrictNavigation } from "./navigation-policy.ts";
+import { consumeTerminalClickDelayMs } from "./pointer-timing.ts";
 import { browserSessionId } from "./terminal-session.ts";
 
 const DEFAULT_PROFILE_ROOT = join(homedir(), ".local", "share", "kitty-browser", "sessions");
 const HIDDEN_WINDOW_POSITION = "--window-position=-32000,-32000";
 const VIRTUAL_WINDOW_POSITION = "--window-position=0,0";
 const VIRTUAL_DISPLAY_ENV = "KITTY_BROWSER_VIRTUAL_DISPLAY";
+
+type MouseClickOptions = Parameters<Mouse["click"]>[2];
+
+const installPointerTiming = (page: Page): void => {
+  const mouse = page.mouse;
+  const originalClick = mouse.click.bind(mouse);
+
+  Object.defineProperty(mouse, "click", {
+    configurable: true,
+    value: async (x: number, y: number, options?: MouseClickOptions): Promise<void> => {
+      if (options?.delay !== undefined) {
+        await originalClick(x, y, options);
+        return;
+      }
+
+      const measuredDelayMs = consumeTerminalClickDelayMs();
+      if (measuredDelayMs === null) {
+        await originalClick(x, y, options);
+        return;
+      }
+
+      await originalClick(x, y, { ...(options ?? {}), delay: measuredDelayMs });
+    },
+  });
+};
 
 export const profileRoot = (): string =>
   process.env.KITTY_BROWSER_PROFILE_ROOT?.trim() || DEFAULT_PROFILE_ROOT;
@@ -95,6 +121,7 @@ export const launchPersistentBrowser = async (
       } else {
         page = await context.newPage();
       }
+      installPointerTiming(page);
       removeShortcuts?.();
       removeShortcuts = installBrowserShortcuts(page);
       return page;
