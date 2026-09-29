@@ -92,7 +92,7 @@ Usage:
   bun run terminal:kitty -- <url> [options]
 
 Options:
-  --fps <n>                  Capture rate, integer 1-60; default 1
+  --fps <n>                  Capture rate, integer 1-120; default 1
   --resolution <mode>        native, named preset, or any positive WIDTHxHEIGHT
   --session <id>             Persistent Chromium profile/session; default "default"
   --audio-ws <url>            Stream 48 kHz stereo PCM audio to a WebSocket
@@ -154,7 +154,7 @@ const parse = (argv: readonly string[]): Args => {
   }
 
   if (!url) help(2);
-  if (!Number.isInteger(fps) || fps < 1 || fps > 60) throw new Error("--fps must be an integer from 1 to 60");
+  if (!Number.isInteger(fps) || fps < 1 || fps > 120) throw new Error("--fps must be an integer from 1 to 120");
   if (!/^https?:\/\//iu.test(url)) url = `https://${url}`;
   return { url, fps, status, resolution };
 };
