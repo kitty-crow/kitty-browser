@@ -8,6 +8,7 @@
   "description": "Standalone real-Chromium terminal browser with Unicode, SIXEL, and Kitty graphics renderers.",
   "scripts": {
     "postinstall": "bun scripts/patch-playwright-standalone.ts",
+    "test": "bun test",
     "terminal": "bun src/cli.ts",
     "terminal:capabilities": "bun src/terminal-capabilities.ts",
     "release": "bun scripts/release-locked.ts",
