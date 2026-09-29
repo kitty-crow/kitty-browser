@@ -1,4 +1,4 @@
-import type { TerminalMouseEvent } from "./terminal-mouse.ts";
+import type { MouseButton, TerminalMouseEvent } from "./terminal-mouse.ts";
 
 interface ActiveLeftPress {
   readonly startedAtMs: number;
@@ -18,7 +18,7 @@ const PENDING_TTL_MS = 1_000;
 let activeLeftPress: ActiveLeftPress | null = null;
 let pendingClickTiming: PendingClickTiming | null = null;
 
-const leftButton = (button: TerminalMouseEvent extends infer _T ? "left" | "middle" | "right" | undefined : never): boolean =>
+const leftButton = (button: MouseButton | undefined): boolean =>
   button === undefined || button === "left";
 
 export const noteTerminalPointerEvent = (
