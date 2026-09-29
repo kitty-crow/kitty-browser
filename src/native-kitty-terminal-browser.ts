@@ -340,7 +340,7 @@ const nativeWindowId = (): string => {
 };
 
 const focusWindow = async (): Promise<void> => {
-  await runQuiet([xdotool, "windowfocus", nativeWindowId()]);
+  await runQuiet([xdotool, "windowfocus", "--sync", nativeWindowId()]);
 };
 
 const resizeWindow = async (): Promise<void> => {
@@ -387,13 +387,13 @@ const scroll = async (dx: number, dy: number): Promise<void> => {
 
 const xKey = async (key: string): Promise<void> => {
   await focusWindow();
-  await runQuiet([xdotool, "key", "--window", nativeWindowId(), "--clearmodifiers", key]);
+  await runQuiet([xdotool, "key", "--clearmodifiers", key]);
 };
 
 const xType = async (text: string): Promise<void> => {
   if (!text) return;
   await focusWindow();
-  await runQuiet([xdotool, "type", "--window", nativeWindowId(), "--clearmodifiers", "--delay", "0", "--", text]);
+  await runQuiet([xdotool, "type", "--clearmodifiers", "--delay", "0", "--", text]);
 };
 
 const navigate = async (url: string): Promise<void> => {
