@@ -1,4 +1,5 @@
 import { filterTerminalShortcutInput } from "./browser-shortcuts.ts";
+import { noteTerminalPointerEvent } from "./pointer-timing.ts";
 
 export type MouseButton = "left" | "middle" | "right";
 
@@ -100,15 +101,14 @@ export class TerminalMouseDecoder {
       }
 
       const [sequence, button, x, y, suffix] = match;
-      out.push({
-        kind: "mouse",
-        event: decodeMouse(
-          Number.parseInt(button!, 10),
-          Number.parseInt(x!, 10),
-          Number.parseInt(y!, 10),
-          suffix!,
-        ),
-      });
+      const event = decodeMouse(
+        Number.parseInt(button!, 10),
+        Number.parseInt(x!, 10),
+        Number.parseInt(y!, 10),
+        suffix!,
+      );
+      noteTerminalPointerEvent(event);
+      out.push({ kind: "mouse", event });
       this.#pending = this.#pending.slice(sequence.length);
     }
 
