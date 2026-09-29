@@ -122,7 +122,7 @@ const parse = (argv: readonly string[]): Args => {
   }
 
   if (!url) throw new Error("native backend requires a launch URL");
-  if (!Number.isInteger(fps) || fps < 1 || fps > 48) throw new Error("--fps must be an integer from 1 to 48");
+  if (!Number.isInteger(fps) || fps < 1 || fps > 120) throw new Error("--fps must be an integer from 1 to 120");
   if (!/^[a-z][a-z0-9+.-]*:/iu.test(url)) url = `https://${url}`;
   return { url, fps, status, resolution };
 };
