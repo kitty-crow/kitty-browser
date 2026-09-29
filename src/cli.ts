@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 import { consumeBrowserSessionArg } from "./terminal-session.ts";
 import { consumeAudioWebSocketArg } from "./audio-options.ts";
+import { consumeBrowserBackendArg } from "./browser-backend.ts";
 import {
   captureTerminalGeometry,
   setAutoResolutionEnabled,
@@ -24,6 +25,7 @@ Usage:
 
 Options:
   --render <mode>            auto, unicode, sixel, or kitty; default auto
+  --backend <mode>           playwright (default) or native X11 Chromium
   --session <id>             Persistent Chromium session/profile; default "default"
   --strict                   Restrict top-level navigation to the launch URL's registrable domain
   --fps <n>                  Capture rate, integer 1-48; default 12
@@ -46,6 +48,7 @@ Examples:
   bun . https://kittycrow.dev
   bun . https://kittycrow.dev --render unicode
   bun . https://kittycrow.dev --render sixel
+  bun . https://kittycrow.dev --render kitty --backend native
   bun . https://kittycrow.dev --render kitty --resolution 720p
   bun . https://kittycrow.dev --render kitty --resolution native
   bun . https://kittycrow.dev --render kitty --session personal --no-status
@@ -55,6 +58,9 @@ The default renderer is auto: Kitty graphics when available, otherwise SIXEL, ot
 Unicode. Kitty and SIXEL default to startup-frozen auto resolution, so reopening the
 browser is required to pick up a changed terminal size. Unicode is terminal-native and
 deliberately does not accept --resolution.
+
+The native backend currently targets Linux/X11 and Kitty rendering. It launches Chromium
+directly and captures its X11 window instead of attaching a browser automation transport.
 
 Strict mode allows navigation between subdomains of the same registrable domain, but
 blocks top-level navigation to a different registrable domain. Third-party page resources
@@ -187,6 +193,7 @@ const findLaunchUrl = (argv = process.argv): string | undefined => {
 if (process.argv.includes("--help") || process.argv.includes("-h")) help(0);
 
 const renderer = consumeRendererArg();
+consumeBrowserBackendArg();
 consumeBrowserSessionArg();
 consumeAudioWebSocketArg();
 consumeStrictArg();
