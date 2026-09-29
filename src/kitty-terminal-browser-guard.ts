@@ -2,11 +2,13 @@
 import { xvfbReexecCommand } from "./runtime-exec.ts";
 import { consumeBrowserSessionArg } from "./terminal-session.ts";
 import { consumeAudioWebSocketArg } from "./audio-options.ts";
+import { browserBackend, consumeBrowserBackendArg } from "./browser-backend.ts";
 import {
   autoResolutionEnabled,
   freezeTerminalGeometry,
 } from "./terminal-auto-resolution.ts";
 
+consumeBrowserBackendArg();
 consumeBrowserSessionArg();
 consumeAudioWebSocketArg();
 
@@ -139,4 +141,8 @@ if (!kittyCapable) {
   process.exit(2);
 }
 
-await import("./kitty-terminal-browser.ts");
+if (browserBackend() === "native") {
+  await import("./native-kitty-terminal-browser.ts");
+} else {
+  await import("./kitty-terminal-browser.ts");
+}
