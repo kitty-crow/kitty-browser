@@ -12,6 +12,7 @@ const DEFAULT_PROFILE_ROOT = join(homedir(), ".local", "share", "kitty-browser",
 const HIDDEN_WINDOW_POSITION = "--window-position=-32000,-32000";
 const VIRTUAL_WINDOW_POSITION = "--window-position=0,0";
 const VIRTUAL_DISPLAY_ENV = "KITTY_BROWSER_VIRTUAL_DISPLAY";
+const CHROMIUM_SANDBOX_ENV = "KITTY_BROWSER_CHROMIUM_SANDBOX";
 
 type MouseClickOptions = Parameters<Mouse["click"]>[2];
 
@@ -70,6 +71,7 @@ export const launchPersistentBrowser = async (
   const executablePath = await bundledChromiumExecutable();
   const virtualDisplay = process.platform === "linux" && process.env[VIRTUAL_DISPLAY_ENV] === "1";
   const args = [virtualDisplay ? VIRTUAL_WINDOW_POSITION : HIDDEN_WINDOW_POSITION];
+  const chromiumSandbox = process.env[CHROMIUM_SANDBOX_ENV] !== "0";
 
   // Kitty Browser intentionally uses real headed Chromium for raster renderers.
   // On displayless Linux the guards re-exec us under Xvfb and place the real
@@ -81,7 +83,8 @@ export const launchPersistentBrowser = async (
   // Neither is required by Kitty Browser. Keep browser-visible behaviour close to
   // an ordinary interactive Chromium session while retaining Playwright solely as
   // the transport used for screenshots and user input. Do not spoof UA or browser
-  // Web APIs here.
+  // Web APIs here. KITTY_BROWSER_CHROMIUM_SANDBOX=0 exists only for environments
+  // such as hosted CI runners that prohibit Chromium's user-namespace sandbox.
 
   const launchEnv = Object.fromEntries(
     Object.entries({ ...process.env, ...(options.env ?? {}) })
@@ -93,7 +96,7 @@ export const launchPersistentBrowser = async (
     args,
     env: launchEnv,
     ignoreDefaultArgs: ["--enable-automation"],
-    chromiumSandbox: true,
+    chromiumSandbox,
     ...(executablePath
       ? { executablePath }
       : options.channel
