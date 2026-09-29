@@ -50,6 +50,12 @@ export const launchPersistentBrowser = async (
   // headed window inside that virtual framebuffer. Do not disable Chromium's
   // GPU/compositor process here: on GPU-less Xvfb Chromium can select its own
   // software path, while --disable-gpu can leave captured compositor frames black.
+  //
+  // Playwright normally adds --enable-automation and disables Chromium's sandbox.
+  // Neither is required by Kitty Browser. Keep browser-visible behaviour close to
+  // an ordinary interactive Chromium session while retaining Playwright solely as
+  // the transport used for screenshots and user input. Do not spoof UA or browser
+  // Web APIs here.
 
   const launchEnv = Object.fromEntries(
     Object.entries({ ...process.env, ...(options.env ?? {}) })
@@ -60,6 +66,8 @@ export const launchPersistentBrowser = async (
     headless: false,
     args,
     env: launchEnv,
+    ignoreDefaultArgs: ["--enable-automation"],
+    chromiumSandbox: true,
     ...(executablePath
       ? { executablePath }
       : options.channel
