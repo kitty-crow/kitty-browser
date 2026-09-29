@@ -11,9 +11,12 @@ const BYTES_PER_SAMPLE = 2;
 const FRAMES_PER_PACKET = 500;
 const PACKET_PCM_BYTES = FRAMES_PER_PACKET * CHANNELS * BYTES_PER_SAMPLE;
 const HEADER_BYTES = 32;
+const PACKET_BYTES = HEADER_BYTES + PACKET_PCM_BYTES;
 const MAGIC = 0x3141424b; // "KBA1" little-endian
 const FORMAT_PCM16LE = 1;
 const CAPTURE_LATENCY_NS = 10_416_667n;
+const RECONNECT_DELAY_MS = 1_000;
+const MAX_WS_BUFFER_BYTES = PACKET_BYTES * 8;
 
 const monotonicNs = (): bigint => process.hrtime.bigint();
 
@@ -34,7 +37,10 @@ const commandText = async (argv: readonly string[]): Promise<string> => {
   return stdout.trim();
 };
 
-const buildPacket = (pcm: Uint8Array, sequence: number, startNs: bigint): Uint8Array => {
+export const buildAudioPacket = (pcm: Uint8Array, sequence: number, startNs: bigint): Uint8Array => {
+  if (pcm.byteLength !== PACKET_PCM_BYTES) {
+    throw new Error(`audio packet PCM must be exactly ${PACKET_PCM_BYTES} bytes`);
+  }
   const packet = new Uint8Array(HEADER_BYTES + pcm.byteLength);
   const view = new DataView(packet.buffer);
   view.setUint32(0, MAGIC, true);
@@ -55,7 +61,7 @@ const connect = async (url: string): Promise<WebSocket> => {
   const ws = new WebSocket(url);
   ws.binaryType = "arraybuffer";
   await new Promise<void>((resolve, reject) => {
-    const timeout = setTimeout(() => reject(new Error("audio WebSocket connection timed out")), 5_000);
+    const timeout = setTimeout(() => finish(() => reject(new Error("audio WebSocket connection timed out"))), 5_000);
     const finish = (fn: () => void): void => {
       clearTimeout(timeout);
       ws.removeEventListener("open", onOpen);
@@ -66,6 +72,9 @@ const connect = async (url: string): Promise<WebSocket> => {
     const onError = (): void => finish(() => reject(new Error("audio WebSocket connection failed")));
     ws.addEventListener("open", onOpen);
     ws.addEventListener("error", onError);
+  }).catch(error => {
+    try { ws.close(); } catch { /* not open */ }
+    throw error;
   });
   return ws;
 };
@@ -109,12 +118,67 @@ export const openChromiumAudioStream = async (url: string): Promise<ChromiumAudi
   }
 
   let ws: WebSocket | null = null;
+  let reconnectTask: Promise<void> | null = null;
   let recorder: ReturnType<typeof Bun.spawn> | null = null;
   let pump: Promise<void> | null = null;
   let closed = false;
 
+  const installSocket = (next: WebSocket): void => {
+    ws = next;
+    const lost = (): void => {
+      if (ws !== next) return;
+      ws = null;
+      try { next.close(); } catch { /* already closed */ }
+      if (!closed) void ensureConnected();
+    };
+    next.addEventListener("close", lost, { once: true });
+    next.addEventListener("error", lost, { once: true });
+  };
+
+  const ensureConnected = (): Promise<void> => {
+    if (closed || ws?.readyState === WebSocket.OPEN) return Promise.resolve();
+    if (reconnectTask !== null) return reconnectTask;
+
+    reconnectTask = (async (): Promise<void> => {
+      while (!closed && ws?.readyState !== WebSocket.OPEN) {
+        try {
+          installSocket(await connect(url));
+          return;
+        } catch {
+          if (!closed) await Bun.sleep(RECONNECT_DELAY_MS);
+        }
+      }
+    })().finally(() => {
+      reconnectTask = null;
+      if (!closed && ws?.readyState !== WebSocket.OPEN) void ensureConnected();
+    });
+    return reconnectTask;
+  };
+
+  const sendLivePacket = (packet: Uint8Array): void => {
+    const current = ws;
+    if (current === null || current.readyState !== WebSocket.OPEN) {
+      void ensureConnected();
+      return;
+    }
+    // This is a live stream. Never build a latency tail to preserve stale audio.
+    // Dropped sequence numbers make the subscriber flush and re-prime cleanly.
+    if (current.bufferedAmount > MAX_WS_BUFFER_BYTES) return;
+    try {
+      current.send(packet);
+    } catch {
+      if (ws === current) ws = null;
+      try { current.close(); } catch { /* already closed */ }
+      void ensureConnected();
+    }
+  };
+
   try {
-    ws = await connect(url);
+    // Connection establishment is deliberately non-fatal after the audio device
+    // is ready. This lets a running browser survive Admin backend restarts and
+    // begin publishing as soon as the loopback relay comes back.
+    void ensureConnected();
+
     recorder = Bun.spawn([
       parec,
       `--device=${sink}.monitor`,
@@ -127,7 +191,6 @@ export const openChromiumAudioStream = async (url: string): Promise<ChromiumAudi
       stderr: "inherit",
     });
 
-    const activeWs = ws;
     const activeRecorder = recorder;
     pump = (async (): Promise<void> => {
       if (typeof activeRecorder.stdout === "number" || activeRecorder.stdout === null) return;
@@ -152,9 +215,7 @@ export const openChromiumAudioStream = async (url: string): Promise<ChromiumAudi
             const pcm = combined.slice(offset, offset + PACKET_PCM_BYTES);
             const startNs = epochNs
               + (BigInt(sequence) * BigInt(FRAMES_PER_PACKET) * 1_000_000_000n) / BigInt(SAMPLE_RATE);
-            if (activeWs.readyState === WebSocket.OPEN) {
-              activeWs.send(buildPacket(pcm, sequence, startNs));
-            }
+            sendLivePacket(buildAudioPacket(pcm, sequence, startNs));
             sequence = (sequence + 1) >>> 0;
             offset += PACKET_PCM_BYTES;
           }
@@ -171,16 +232,22 @@ export const openChromiumAudioStream = async (url: string): Promise<ChromiumAudi
       async close(): Promise<void> {
         if (closed) return;
         closed = true;
-        try { ws?.close(1000, "kitty browser audio stopped"); } catch { /* already closed */ }
+        const current = ws;
+        ws = null;
+        try { current?.close(1000, "kitty browser audio stopped"); } catch { /* already closed */ }
         try { recorder?.kill(); } catch { /* already exited */ }
         await pump?.catch(() => undefined);
+        await reconnectTask?.catch(() => undefined);
         await commandText([pactl, "unload-module", moduleId]).catch(() => undefined);
       },
     };
   } catch (error) {
     closed = true;
-    try { ws?.close(); } catch { /* ignore */ }
+    const current = ws;
+    ws = null;
+    try { current?.close(); } catch { /* ignore */ }
     try { recorder?.kill(); } catch { /* ignore */ }
+    await reconnectTask?.catch(() => undefined);
     await commandText([pactl, "unload-module", moduleId]).catch(() => undefined);
     throw error;
   }
