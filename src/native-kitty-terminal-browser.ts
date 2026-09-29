@@ -609,10 +609,21 @@ const pointerDrawArgs = (): string[] => {
 };
 
 const captureWindow = async (): Promise<Uint8Array> => {
-  const captured = await runBytes([imageImport, "-silent", "-window", nativeWindowId(), "png:-"]);
+  // Reading Chromium's own drawable with ImageMagick import is unreliable on
+  // Chromium's accelerated/composited X11 window and can fail with
+  // "Resource temporarily unavailable" even while the window is mapped.
+  // Native mode owns this Xvfb display and pins Chromium to (0, 0), so capture
+  // the stable root framebuffer and crop exactly to the browser window instead.
+  const root = await runBytes([imageImport, "-silent", "-window", "root", "png:-"]);
   const draw = pointerDrawArgs();
-  if (draw.length === 0) return captured;
-  return await runBytesWithInput([imageConvert, "png:-", ...draw, "png:-"], captured);
+  return await runBytesWithInput([
+    imageConvert,
+    "png:-",
+    "-crop", `${actualWindow.width}x${actualWindow.height}+0+0`,
+    "+repage",
+    ...draw,
+    "png:-",
+  ], root);
 };
 
 const applyResize = async (): Promise<void> => {
