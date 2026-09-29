@@ -45,5 +45,5 @@ jobs:
           xvfb-run -a \
             -s "-screen 0 1920x1080x24 -nolisten tcp" \
             dbus-run-session -- \
-            env KITTY_BROWSER_VIRTUAL_DISPLAY=1 \
+            env KITTY_BROWSER_VIRTUAL_DISPLAY=1 KITTY_BROWSER_CHROMIUM_SANDBOX=0 \
             bun scripts/raster-smoke.ts
