@@ -168,6 +168,18 @@ const runBytes = async (argv: readonly string[]): Promise<Uint8Array> => {
   return stdout;
 };
 
+const runBytesWithInput = async (argv: readonly string[], input: Uint8Array): Promise<Uint8Array> => {
+  const proc = Bun.spawn([...argv], { stdin: "pipe", stdout: "pipe", stderr: "pipe" });
+  proc.stdin.write(input);
+  proc.stdin.end();
+  const stdoutPromise = streamBytes(proc.stdout);
+  const stderrPromise = streamText(proc.stderr);
+  const code = await proc.exited;
+  const [stdout, stderr] = await Promise.all([stdoutPromise, stderrPromise]);
+  if (code !== 0) throw new Error(`${argv[0]} exited ${code}: ${stderr.trim() || "unknown error"}`);
+  return stdout;
+};
+
 const runText = async (argv: readonly string[]): Promise<string> =>
   new TextDecoder().decode(await runBytes(argv)).trim();
 
@@ -217,10 +229,11 @@ const stdout = async (value: string): Promise<void> => {
 
 const xdotool = Bun.which("xdotool");
 const imageImport = Bun.which("import");
+const imageConvert = Bun.which("magick") ?? Bun.which("convert");
 if (process.platform !== "linux") throw new Error("--backend native currently requires Linux/X11");
 if (!process.env.DISPLAY) throw new Error("--backend native requires DISPLAY; use the normal Kitty launcher so it can start Xvfb");
-if (!xdotool || !imageImport) {
-  throw new Error("--backend native requires xdotool and ImageMagick import (Ubuntu: sudo apt-get install -y xdotool imagemagick)");
+if (!xdotool || !imageImport || !imageConvert) {
+  throw new Error("--backend native requires xdotool plus ImageMagick import/convert (Ubuntu: sudo apt-get install -y xdotool imagemagick)");
 }
 if (process.env[STRICT_ENV] === "1") {
   throw new Error("--strict is not yet available with --backend native because native mode deliberately has no page-inspection transport");
@@ -595,8 +608,12 @@ const pointerDrawArgs = (): string[] => {
   ];
 };
 
-const captureWindow = async (): Promise<Uint8Array> =>
-  await runBytes([imageImport, "-silent", "-window", nativeWindowId(), ...pointerDrawArgs(), "png:-"]);
+const captureWindow = async (): Promise<Uint8Array> => {
+  const captured = await runBytes([imageImport, "-silent", "-window", nativeWindowId(), "png:-"]);
+  const draw = pointerDrawArgs();
+  if (draw.length === 0) return captured;
+  return await runBytesWithInput([imageConvert, "png:-", ...draw, "png:-"], captured);
+};
 
 const applyResize = async (): Promise<void> => {
   if (!resizePending || shuttingDown) return;
