@@ -228,37 +228,40 @@ const handleTrackpad = async (event: TrackpadEvent): Promise<void> => {
 
 const decoder = new TrackpadDecoder();
 const stdin = process.stdin;
-const originalOn = stdin.on;
-let interceptedDataListener = false;
+const originalEmit = stdin.emit;
 
-Object.defineProperty(stdin, 'on', {
+/*
+ * Strip only our private OSC 778 input messages before Node dispatches stdin
+ * data to the existing native browser listeners. This is deliberately done at
+ * the event boundary rather than replacing stdin.on(), so the native backend's
+ * listener registration and ordering stay completely unchanged.
+ */
+Object.defineProperty(stdin, 'emit', {
   configurable: true,
   writable: true,
-  value(eventName: string | symbol, listener: (...args: unknown[]) => void): NodeJS.ReadStream {
-    if (eventName !== 'data' || interceptedDataListener) {
-      return Reflect.apply(originalOn, this, [eventName, listener]) as NodeJS.ReadStream;
+  value(eventName: string | symbol, ...args: unknown[]): boolean {
+    if (eventName !== 'data' || args.length === 0) {
+      return Reflect.apply(originalEmit, this, [eventName, ...args]) as boolean;
     }
 
-    interceptedDataListener = true;
-    Object.defineProperty(stdin, 'on', {
-      configurable: true,
-      writable: true,
-      value: originalOn,
-    });
+    const chunk = args[0];
+    if (typeof chunk !== 'string' && !Buffer.isBuffer(chunk)) {
+      return Reflect.apply(originalEmit, this, [eventName, ...args]) as boolean;
+    }
 
-    const dataListener = listener as unknown as (chunk: Buffer | string) => void;
-    const wrapped = (chunk: Buffer | string): void => {
-      const text = typeof chunk === 'string' ? chunk : chunk.toString('utf8');
-      for (const decoded of decoder.push(text)) {
-        if (decoded.kind === 'text') {
-          if (decoded.text.length > 0) dataListener(decoded.text);
-          continue;
-        }
+    const text = typeof chunk === 'string' ? chunk : chunk.toString('utf8');
+    let forwarded = '';
+    for (const decoded of decoder.push(text)) {
+      if (decoded.kind === 'text') {
+        forwarded += decoded.text;
+      } else {
         commandQueue = commandQueue.then(() => handleTrackpad(decoded.event)).catch(() => undefined);
       }
-    };
+    }
 
-    return Reflect.apply(originalOn, this, ['data', wrapped]) as NodeJS.ReadStream;
+    if (forwarded.length === 0) return true;
+    const forwardedChunk = typeof chunk === 'string' ? forwarded : Buffer.from(forwarded, 'utf8');
+    return Reflect.apply(originalEmit, this, [eventName, forwardedChunk, ...args.slice(1)]) as boolean;
   },
 });
 
