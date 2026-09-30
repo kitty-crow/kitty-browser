@@ -53,6 +53,12 @@ interface LeftPress {
   buttonDown: boolean;
 }
 
+interface CapturePipe {
+  readonly reader: ReadableStreamDefaultReader<Uint8Array>;
+  readonly exited: Promise<number>;
+  readonly kill: () => void;
+}
+
 const PROFILE_ROOT = join(homedir(), ".local", "share", "kitty-browser", "sessions");
 const NATIVE_CELL_WIDTH = 8;
 const NATIVE_CELL_HEIGHT = 16;
@@ -64,6 +70,10 @@ const MIN_WINDOW_HEIGHT = 240;
 const WINDOW_WAIT_MS = 15_000;
 const WINDOW_POLL_MS = 100;
 const STRICT_ENV = "KITTY_BROWSER_STRICT";
+const PNG_SIGNATURE = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]);
+const MAX_PNG_FRAME_BYTES = 64 * 1024 * 1024;
+const NS_PER_SECOND = 1_000_000_000n;
+const CAPTURE_FPS_WINDOW_MS = 500;
 
 const PRESETS = new Map<string, readonly [number, number]>([
   ["800x600", [800, 600]],
@@ -168,18 +178,6 @@ const runBytes = async (argv: readonly string[]): Promise<Uint8Array> => {
   return stdout;
 };
 
-const runBytesWithInput = async (argv: readonly string[], input: Uint8Array): Promise<Uint8Array> => {
-  const proc = Bun.spawn([...argv], { stdin: "pipe", stdout: "pipe", stderr: "pipe" });
-  proc.stdin.write(input);
-  proc.stdin.end();
-  const stdoutPromise = streamBytes(proc.stdout);
-  const stderrPromise = streamText(proc.stderr);
-  const code = await proc.exited;
-  const [stdout, stderr] = await Promise.all([stdoutPromise, stderrPromise]);
-  if (code !== 0) throw new Error(`${argv[0]} exited ${code}: ${stderr.trim() || "unknown error"}`);
-  return stdout;
-};
-
 const runText = async (argv: readonly string[]): Promise<string> =>
   new TextDecoder().decode(await runBytes(argv)).trim();
 
@@ -227,13 +225,29 @@ const stdout = async (value: string): Promise<void> => {
   await new Promise<void>((resolve) => process.stdout.once("drain", resolve));
 };
 
+const appendBytes = (a: Uint8Array, b: Uint8Array): Uint8Array => {
+  if (a.byteLength === 0) return b.slice();
+  if (b.byteLength === 0) return a.slice();
+  const out = new Uint8Array(a.byteLength + b.byteLength);
+  out.set(a);
+  out.set(b, a.byteLength);
+  return out;
+};
+
+const hasPngSignature = (bytes: Uint8Array): boolean => {
+  if (bytes.byteLength < PNG_SIGNATURE.byteLength) return false;
+  for (let i = 0; i < PNG_SIGNATURE.byteLength; i += 1) {
+    if (bytes[i] !== PNG_SIGNATURE[i]) return false;
+  }
+  return true;
+};
+
 const xdotool = Bun.which("xdotool");
-const imageImport = Bun.which("import");
-const imageConvert = Bun.which("magick") ?? Bun.which("convert");
+const ffmpeg = Bun.which("ffmpeg");
 if (process.platform !== "linux") throw new Error("--backend native currently requires Linux/X11");
 if (!process.env.DISPLAY) throw new Error("--backend native requires DISPLAY; use the normal Kitty launcher so it can start Xvfb");
-if (!xdotool || !imageImport || !imageConvert) {
-  throw new Error("--backend native requires xdotool plus ImageMagick import/convert (Ubuntu: sudo apt-get install -y xdotool imagemagick)");
+if (!xdotool || !ffmpeg) {
+  throw new Error("--backend native requires xdotool and ffmpeg (Ubuntu: sudo apt-get install -y xdotool ffmpeg)");
 }
 if (process.env[STRICT_ENV] === "1") {
   throw new Error("--strict is not yet available with --backend native because native mode deliberately has no page-inspection transport");
@@ -258,6 +272,14 @@ let auxiliaryButton: MouseButton | null = null;
 let inputQueue: Promise<void> = Promise.resolve();
 let browser: ReturnType<typeof Bun.spawn> | null = null;
 let windowId: string | null = null;
+let capturePipe: CapturePipe | null = null;
+let captureBytes = new Uint8Array(0);
+let captureNeedsAnchor = true;
+let captureBaseFrame = 0;
+let captureBaseNs: bigint | null = null;
+let actualCaptureFps = 0;
+let captureFpsStarted = performance.now();
+let captureFpsFrames = 0;
 
 const audio = await tryOpenChromiumAudioStream(audioWs);
 const profileDir = join(process.env.KITTY_BROWSER_PROFILE_ROOT?.trim() || PROFILE_ROOT, browserSessionId());
@@ -353,6 +375,115 @@ const resizeWindow = async (): Promise<void> => {
 await resizeWindow();
 await focusWindow();
 
+const extractPngFrame = (): Uint8Array | null => {
+  if (captureBytes.byteLength < PNG_SIGNATURE.byteLength) return null;
+  if (!hasPngSignature(captureBytes)) throw new Error("ffmpeg capture produced a non-PNG image2pipe stream");
+
+  let offset = PNG_SIGNATURE.byteLength;
+  while (true) {
+    if (captureBytes.byteLength < offset + 12) return null;
+    const length = (captureBytes[offset]! * 0x1000000)
+      + (captureBytes[offset + 1]! * 0x10000)
+      + (captureBytes[offset + 2]! * 0x100)
+      + captureBytes[offset + 3]!;
+    const end = offset + 12 + length;
+    if (end > MAX_PNG_FRAME_BYTES) throw new Error("ffmpeg capture PNG exceeded the 64 MiB safety limit");
+    if (captureBytes.byteLength < end) return null;
+    const iend = captureBytes[offset + 4] === 73
+      && captureBytes[offset + 5] === 69
+      && captureBytes[offset + 6] === 78
+      && captureBytes[offset + 7] === 68;
+    offset = end;
+    if (!iend) continue;
+    const png = captureBytes.slice(0, offset);
+    captureBytes = captureBytes.slice(offset);
+    return png;
+  }
+};
+
+const startCapture = (): void => {
+  if (capturePipe !== null) return;
+  captureBytes = new Uint8Array(0);
+  captureNeedsAnchor = true;
+  captureFpsStarted = performance.now();
+  captureFpsFrames = 0;
+  actualCaptureFps = 0;
+
+  const child = Bun.spawn([
+    ffmpeg,
+    "-hide_banner",
+    "-loglevel", "error",
+    "-f", "x11grab",
+    "-framerate", String(args.fps),
+    "-video_size", `${actualWindow.width}x${actualWindow.height}`,
+    "-draw_mouse", "1",
+    "-i", `${process.env.DISPLAY!}+0,0`,
+    "-an",
+    "-c:v", "png",
+    "-compression_level", "1",
+    "-threads", "0",
+    "-fps_mode", "passthrough",
+    "-f", "image2pipe",
+    "-flush_packets", "1",
+    "pipe:1",
+  ], {
+    stdin: "ignore",
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+
+  const reader = child.stdout.getReader();
+  capturePipe = {
+    reader,
+    exited: child.exited,
+    kill: () => { try { child.kill(); } catch { /* already exited */ } },
+  };
+
+  void streamText(child.stderr).then((text) => {
+    if (text.trim() && capturePipe?.reader === reader && !shuttingDown) {
+      process.stderr.write(`\nffmpeg capture: ${text.trim()}\n`);
+    }
+  }).catch(() => undefined);
+};
+
+const stopCapture = async (): Promise<void> => {
+  const current = capturePipe;
+  capturePipe = null;
+  captureBytes = new Uint8Array(0);
+  if (current === null) return;
+  current.kill();
+  try { await current.reader.cancel(); } catch { /* stream already closed */ }
+  try { current.reader.releaseLock(); } catch { /* already released */ }
+  await current.exited.catch(() => undefined);
+};
+
+const nextCaptureFrame = async (): Promise<Uint8Array> => {
+  while (true) {
+    const ready = extractPngFrame();
+    if (ready !== null) return ready;
+    const current = capturePipe;
+    if (current === null) throw new Error("ffmpeg capture is not running");
+    const chunk = await current.reader.read();
+    if (chunk.done) {
+      const code = await current.exited.catch(() => -1);
+      throw new Error(`ffmpeg x11grab capture exited unexpectedly with code ${code}`);
+    }
+    if (chunk.value.byteLength > 0) captureBytes = appendBytes(captureBytes, chunk.value);
+  }
+};
+
+const noteCaptureFrame = (now: number): void => {
+  captureFpsFrames += 1;
+  const elapsed = now - captureFpsStarted;
+  if (elapsed < CAPTURE_FPS_WINDOW_MS) return;
+  actualCaptureFps = captureFpsFrames * 1000 / elapsed;
+  captureFpsStarted = now;
+  captureFpsFrames = 0;
+  lastStatus = "";
+};
+
+startCapture();
+
 const browserPoint = (x = cursorX, y = cursorY): { x: number; y: number } => ({
   x: Math.round((x + 0.5) * actualWindow.width / geometry.columns),
   y: Math.round((y + 0.5) * actualWindow.height / geometry.rows),
@@ -417,7 +548,8 @@ let navCursor = 0;
 const controls = " [<] [R] ";
 const renderStatus = (): string => {
   if (!args.status) return "";
-  const metadata = `  native  ${args.fps}fps  session:${browserSessionId()}  audio:${audio ? "on" : "off"} `;
+  const capture = actualCaptureFps > 0 ? actualCaptureFps.toFixed(1) : "--";
+  const metadata = `  native  ${args.fps}fps cap:${capture}  session:${browserSessionId()}  audio:${audio ? "on" : "off"} `;
   const available = Math.max(1, geometry.columns - controls.length - metadata.length);
   const source = navEditing ? navValue : displayUrl;
   let visible: string;
@@ -590,42 +722,6 @@ const handleKey = async (text: string): Promise<void> => {
   if (!text.startsWith("\x1b") && !/[\x00-\x08\x0b\x0c\x0e-\x1f]/u.test(text)) await xType(text);
 };
 
-const pointerDrawArgs = (): string[] => {
-  const highlighted = Math.floor(frame / Math.max(1, args.fps)) % 2 === 0;
-  if (!highlighted) return [];
-  const point = browserPoint();
-  const halfWidth = Math.max(3, Math.round(actualWindow.width / geometry.columns / 2));
-  const halfHeight = Math.max(3, Math.round(actualWindow.height / geometry.rows / 2));
-  const x1 = clamp(point.x - halfWidth, 0, actualWindow.width - 1);
-  const y1 = clamp(point.y - halfHeight, 0, actualWindow.height - 1);
-  const x2 = clamp(point.x + halfWidth, 0, actualWindow.width - 1);
-  const y2 = clamp(point.y + halfHeight, 0, actualWindow.height - 1);
-  return [
-    "-fill", "#003060",
-    "-stroke", "white",
-    "-strokewidth", "2",
-    "-draw", `rectangle ${x1},${y1} ${x2},${y2}`,
-  ];
-};
-
-const captureWindow = async (): Promise<Uint8Array> => {
-  // Reading Chromium's own drawable with ImageMagick import is unreliable on
-  // Chromium's accelerated/composited X11 window and can fail with
-  // "Resource temporarily unavailable" even while the window is mapped.
-  // Native mode owns this Xvfb display and pins Chromium to (0, 0), so capture
-  // the stable root framebuffer and crop exactly to the browser window instead.
-  const root = await runBytes([imageImport, "-silent", "-window", "root", "png:-"]);
-  const draw = pointerDrawArgs();
-  return await runBytesWithInput([
-    imageConvert,
-    "png:-",
-    "-crop", `${actualWindow.width}x${actualWindow.height}+0+0`,
-    "+repage",
-    ...draw,
-    "png:-",
-  ], root);
-};
-
 const applyResize = async (): Promise<void> => {
   if (!resizePending || shuttingDown) return;
   resizePending = false;
@@ -634,7 +730,11 @@ const applyResize = async (): Promise<void> => {
   geometry = next;
   cursorX = clamp(cursorX, 0, geometry.columns - 1);
   cursorY = clamp(cursorY, 0, geometry.rows - 1);
-  if (changed) await resizeWindow();
+  if (changed) {
+    await stopCapture();
+    await resizeWindow();
+    startCapture();
+  }
   process.stdout.write(`${kittyDelete()}\x1b[2J`);
   lastStatus = "";
 };
@@ -653,6 +753,7 @@ const cleanup = async (): Promise<void> => {
   process.stdin.pause();
   if (leftPress?.buttonDown) await mouseUp(1).catch(() => undefined);
   if (auxiliaryButton) await mouseUp(auxiliaryButton === "middle" ? 2 : 3).catch(() => undefined);
+  await stopCapture();
   try { browser?.kill(); } catch { /* already exited */ }
   await audio?.close();
 };
@@ -681,19 +782,23 @@ process.stdin.on("data", (chunk: string) => {
 });
 
 try {
-  const frameDelayMs = 1_000 / args.fps;
   while (running) {
-    const started = performance.now();
     await applyResize();
     if (!running) break;
     const captureStartedNs = monotonicNs();
-    const png = await captureWindow();
-    const captureTimestampNs = midpointNs(captureStartedNs, monotonicNs());
+    const png = await nextCaptureFrame();
+    const captureEndedNs = monotonicNs();
+    if (captureNeedsAnchor || captureBaseNs === null) {
+      captureBaseFrame = frame;
+      captureBaseNs = midpointNs(captureStartedNs, captureEndedNs);
+      captureNeedsAnchor = false;
+    }
+    const captureTimestampNs = captureBaseNs
+      + (BigInt(frame - captureBaseFrame) * NS_PER_SECOND) / BigInt(args.fps);
+    noteCaptureFrame(performance.now());
     await stdout(`${mediaFrameMarker(frame, args.fps, captureTimestampNs)}${kittyFrame(png, geometry)}`);
     paintStatus();
     frame += 1;
-    const remaining = frameDelayMs - (performance.now() - started);
-    if (remaining > 0) await Bun.sleep(remaining);
   }
 } finally {
   await inputQueue.catch(() => undefined);
