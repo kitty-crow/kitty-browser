@@ -16,14 +16,6 @@ type DecodedInput =
   | { readonly kind: 'text'; readonly text: string }
   | { readonly kind: 'trackpad'; readonly event: TrackpadEvent };
 
-type PointerState = {
-  readonly windowId: string;
-  readonly width: number;
-  readonly height: number;
-  x: number;
-  y: number;
-};
-
 const clamp = (value: number, min: number, max: number): number =>
   Math.min(max, Math.max(min, value));
 
@@ -109,94 +101,30 @@ class TrackpadDecoder {
   }
 }
 
-const streamText = async (stream: ReadableStream<Uint8Array> | number | null | undefined): Promise<string> => {
-  if (stream === null || stream === undefined || typeof stream === 'number') return '';
-  return await new Response(stream).text();
-};
-
-const runText = async (argv: readonly string[]): Promise<string> => {
-  const proc = Bun.spawn([...argv], { stdout: 'pipe', stderr: 'ignore' });
-  const output = await streamText(proc.stdout);
-  return await proc.exited === 0 ? output.trim() : '';
-};
-
 const runQuiet = async (argv: readonly string[]): Promise<void> => {
   const proc = Bun.spawn([...argv], { stdout: 'ignore', stderr: 'ignore' });
   await proc.exited;
 };
 
-const parseShell = (text: string): Map<string, number> => {
-  const values = new Map<string, number>();
-  for (const line of text.split(/\r?\n/u)) {
-    const match = line.match(/^([A-Z]+)=(-?\d+)$/u);
-    if (match === null) continue;
-    values.set(match[1]!, Number.parseInt(match[2]!, 10));
-  }
-  return values;
-};
-
 const xdotool = Bun.which('xdotool');
 if (xdotool === null) throw new Error('native trackpad mode requires xdotool');
 
-let pointer: PointerState | null = null;
 let commandQueue: Promise<void> = Promise.resolve();
 
-const findNativeBrowserWindow = async (): Promise<PointerState | null> => {
-  const wmClass = `kitty-browser-native-${process.pid}`;
-  const rawIds = await runText([xdotool, 'search', '--class', wmClass]);
-  const ids = rawIds.split(/\s+/u).filter(id => /^\d+$/u.test(id));
-
-  let best: PointerState | null = null;
-  let bestArea = -1;
-  for (const windowId of ids) {
-    const geometry = parseShell(await runText([xdotool, 'getwindowgeometry', '--shell', windowId]));
-    const width = geometry.get('WIDTH');
-    const height = geometry.get('HEIGHT');
-    if (width === undefined || height === undefined || width <= 0 || height <= 0) continue;
-    const area = width * height;
-    if (area <= bestArea) continue;
-    bestArea = area;
-    best = {
-      windowId,
-      width,
-      height,
-      x: Math.floor((width - 1) / 2),
-      y: Math.floor((height - 1) / 2),
-    };
-  }
-  return best;
-};
-
-const initialisePointer = async (): Promise<PointerState | null> => {
-  const state = await findNativeBrowserWindow();
-  if (state === null) return null;
-  pointer = state;
-  await runQuiet([xdotool, 'mousemove', '--window', state.windowId, String(state.x), String(state.y)]);
-  return state;
-};
-
-const pointerState = async (): Promise<PointerState | null> => pointer ?? await initialisePointer();
-
 const movePointer = async (dx: number, dy: number): Promise<void> => {
-  const state = await pointerState();
-  if (state === null || (dx === 0 && dy === 0)) return;
-  state.x = clamp(state.x + dx, 0, state.width - 1);
-  state.y = clamp(state.y + dy, 0, state.height - 1);
-  await runQuiet([xdotool, 'mousemove', '--window', state.windowId, String(state.x), String(state.y)]);
+  if (dx === 0 && dy === 0) return;
+  await runQuiet([xdotool, 'mousemove_relative', '--', String(dx), String(dy)]);
 };
 
 const clickButton = async (mouseButton: TrackpadButton): Promise<void> => {
-  if (await pointerState() === null) return;
   await runQuiet([xdotool, 'click', String(mouseButton)]);
 };
 
 const changeButton = async (action: 'mousedown' | 'mouseup', mouseButton: TrackpadButton): Promise<void> => {
-  if (await pointerState() === null) return;
   await runQuiet([xdotool, action, String(mouseButton)]);
 };
 
 const scroll = async (dx: number, dy: number): Promise<void> => {
-  if ((dx !== 0 || dy !== 0) && await pointerState() === null) return;
   if (dy !== 0) {
     await runQuiet([
       xdotool,
@@ -218,11 +146,7 @@ const scroll = async (dx: number, dy: number): Promise<void> => {
 };
 
 const handleTrackpad = async (event: TrackpadEvent): Promise<void> => {
-  if (event.kind === 'reset') {
-    pointer = null;
-    await pointerState();
-    return;
-  }
+  if (event.kind === 'reset') return;
   if (event.kind === 'move') {
     await movePointer(event.dx, event.dy);
     return;
@@ -242,7 +166,12 @@ const decoder = new TrackpadDecoder();
 const stdin = process.stdin;
 const originalEmit = stdin.emit;
 
-/* Strip only private OSC 778 input before the native browser input parser sees it. */
+/*
+ * Strip only private OSC 778 commands before the native browser parser sees
+ * stdin. Ordinary terminal input is emitted immediately and in-order. This is
+ * important because the frontend uses one ordinary SGR mouse-motion report to
+ * establish the browser-centre origin before relative trackpad commands begin.
+ */
 Object.defineProperty(stdin, 'emit', {
   configurable: true,
   writable: true,
@@ -257,22 +186,26 @@ Object.defineProperty(stdin, 'emit', {
     }
 
     const text = typeof chunk === 'string' ? chunk : chunk.toString('utf8');
-    let forwarded = '';
+    let handled = false;
+
     for (const decoded of decoder.push(text)) {
       if (decoded.kind === 'text') {
-        forwarded += decoded.text;
-      } else {
-        commandQueue = commandQueue.then(() => handleTrackpad(decoded.event)).catch(() => undefined);
+        if (decoded.text.length === 0) continue;
+        const forwarded = typeof chunk === 'string'
+          ? decoded.text
+          : Buffer.from(decoded.text, 'utf8');
+        handled = (Reflect.apply(originalEmit, this, [eventName, forwarded, ...args.slice(1)]) as boolean) || handled;
+        continue;
       }
+
+      handled = true;
+      commandQueue = commandQueue.then(() => handleTrackpad(decoded.event)).catch(() => undefined);
     }
 
-    if (forwarded.length === 0) return true;
-    const forwardedChunk = typeof chunk === 'string' ? forwarded : Buffer.from(forwarded, 'utf8');
-    return Reflect.apply(originalEmit, this, [eventName, forwardedChunk, ...args.slice(1)]) as boolean;
+    return handled;
   },
 });
 
-process.on('SIGWINCH', () => { pointer = null; });
 process.stdout.write(TRACKPAD_READY);
 
 await import('./native-kitty-terminal-browser.ts');
