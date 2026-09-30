@@ -146,46 +146,40 @@ const initialisePointer = async (): Promise<PointerState | null> => {
   if (!/^\d+$/u.test(windowId)) return null;
 
   const geometry = parseShell(await runText([xdotool, 'getwindowgeometry', '--shell', windowId]));
-  const mouse = parseShell(await runText([xdotool, 'getmouselocation', '--shell']));
-  const windowX = geometry.get('X');
-  const windowY = geometry.get('Y');
   const width = geometry.get('WIDTH');
   const height = geometry.get('HEIGHT');
-  const mouseX = mouse.get('X');
-  const mouseY = mouse.get('Y');
-  if (windowX === undefined || windowY === undefined || width === undefined || height === undefined
-    || mouseX === undefined || mouseY === undefined || width <= 0 || height <= 0) return null;
+  if (width === undefined || height === undefined || width <= 0 || height <= 0) return null;
 
-  pointer = {
-    windowId,
-    width,
-    height,
-    x: clamp(mouseX - windowX, 0, width - 1),
-    y: clamp(mouseY - windowY, 0, height - 1),
-  };
+  const x = Math.floor((width - 1) / 2);
+  const y = Math.floor((height - 1) / 2);
+  pointer = { windowId, width, height, x, y };
+  await runQuiet([xdotool, 'mousemove', '--window', windowId, String(x), String(y)]);
   return pointer;
 };
 
 const pointerState = async (): Promise<PointerState | null> => pointer ?? await initialisePointer();
 
 const movePointer = async (dx: number, dy: number): Promise<void> => {
-  if (dx === 0 && dy === 0) return;
   const state = await pointerState();
   if (state === null) return;
+  if (dx === 0 && dy === 0) return;
   state.x = clamp(state.x + dx, 0, state.width - 1);
   state.y = clamp(state.y + dy, 0, state.height - 1);
   await runQuiet([xdotool, 'mousemove', '--window', state.windowId, String(state.x), String(state.y)]);
 };
 
 const clickButton = async (mouseButton: TrackpadButton): Promise<void> => {
+  if (await pointerState() === null) return;
   await runQuiet([xdotool, 'click', String(mouseButton)]);
 };
 
 const changeButton = async (action: 'mousedown' | 'mouseup', mouseButton: TrackpadButton): Promise<void> => {
+  if (await pointerState() === null) return;
   await runQuiet([xdotool, action, String(mouseButton)]);
 };
 
 const scroll = async (dx: number, dy: number): Promise<void> => {
+  if ((dx !== 0 || dy !== 0) && await pointerState() === null) return;
   if (dy !== 0) {
     await runQuiet([
       xdotool,
@@ -209,6 +203,7 @@ const scroll = async (dx: number, dy: number): Promise<void> => {
 const handleTrackpad = async (event: TrackpadEvent): Promise<void> => {
   if (event.kind === 'reset') {
     pointer = null;
+    await pointerState();
     return;
   }
   if (event.kind === 'move') {
