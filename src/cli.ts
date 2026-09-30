@@ -59,8 +59,8 @@ Unicode. Kitty and SIXEL default to startup-frozen auto resolution, so reopening
 browser is required to pick up a changed terminal size. Unicode is terminal-native and
 deliberately does not accept --resolution.
 
-The native backend currently targets Linux/X11 and Kitty rendering. It launches Chromium
-directly and captures its X11 window instead of attaching a browser automation transport.
+The native backend currently targets Linux/X11 and Kitty rendering. Use the default
+Playwright backend for explicit Unicode or SIXEL rendering.
 
 Strict mode allows navigation between subdomains of the same registrable domain, but
 blocks top-level navigation to a different registrable domain. Third-party page resources
@@ -193,7 +193,10 @@ const findLaunchUrl = (argv = process.argv): string | undefined => {
 if (process.argv.includes("--help") || process.argv.includes("-h")) help(0);
 
 const renderer = consumeRendererArg();
-consumeBrowserBackendArg();
+const backend = consumeBrowserBackendArg();
+if (backend === "native" && (renderer === "unicode" || renderer === "sixel")) {
+  throw new Error(`--backend native currently supports Kitty rendering only; omit --backend native when using --render ${renderer}`);
+}
 consumeBrowserSessionArg();
 consumeAudioWebSocketArg();
 consumeStrictArg();
