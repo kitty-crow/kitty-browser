@@ -141,28 +141,45 @@ if (xdotool === null) throw new Error('native trackpad mode requires xdotool');
 let pointer: PointerState | null = null;
 let commandQueue: Promise<void> = Promise.resolve();
 
+const findNativeBrowserWindow = async (): Promise<PointerState | null> => {
+  const wmClass = `kitty-browser-native-${process.pid}`;
+  const rawIds = await runText([xdotool, 'search', '--class', wmClass]);
+  const ids = rawIds.split(/\s+/u).filter(id => /^\d+$/u.test(id));
+
+  let best: PointerState | null = null;
+  let bestArea = -1;
+  for (const windowId of ids) {
+    const geometry = parseShell(await runText([xdotool, 'getwindowgeometry', '--shell', windowId]));
+    const width = geometry.get('WIDTH');
+    const height = geometry.get('HEIGHT');
+    if (width === undefined || height === undefined || width <= 0 || height <= 0) continue;
+    const area = width * height;
+    if (area <= bestArea) continue;
+    bestArea = area;
+    best = {
+      windowId,
+      width,
+      height,
+      x: Math.floor((width - 1) / 2),
+      y: Math.floor((height - 1) / 2),
+    };
+  }
+  return best;
+};
+
 const initialisePointer = async (): Promise<PointerState | null> => {
-  const windowId = await runText([xdotool, 'getactivewindow']);
-  if (!/^\d+$/u.test(windowId)) return null;
-
-  const geometry = parseShell(await runText([xdotool, 'getwindowgeometry', '--shell', windowId]));
-  const width = geometry.get('WIDTH');
-  const height = geometry.get('HEIGHT');
-  if (width === undefined || height === undefined || width <= 0 || height <= 0) return null;
-
-  const x = Math.floor((width - 1) / 2);
-  const y = Math.floor((height - 1) / 2);
-  pointer = { windowId, width, height, x, y };
-  await runQuiet([xdotool, 'mousemove', '--window', windowId, String(x), String(y)]);
-  return pointer;
+  const state = await findNativeBrowserWindow();
+  if (state === null) return null;
+  pointer = state;
+  await runQuiet([xdotool, 'mousemove', '--window', state.windowId, String(state.x), String(state.y)]);
+  return state;
 };
 
 const pointerState = async (): Promise<PointerState | null> => pointer ?? await initialisePointer();
 
 const movePointer = async (dx: number, dy: number): Promise<void> => {
   const state = await pointerState();
-  if (state === null) return;
-  if (dx === 0 && dy === 0) return;
+  if (state === null || (dx === 0 && dy === 0)) return;
   state.x = clamp(state.x + dx, 0, state.width - 1);
   state.y = clamp(state.y + dy, 0, state.height - 1);
   await runQuiet([xdotool, 'mousemove', '--window', state.windowId, String(state.x), String(state.y)]);
@@ -225,12 +242,7 @@ const decoder = new TrackpadDecoder();
 const stdin = process.stdin;
 const originalEmit = stdin.emit;
 
-/*
- * Strip only our private OSC 778 input messages before Node dispatches stdin
- * data to the existing native browser listeners. This is deliberately done at
- * the event boundary rather than replacing stdin.on(), so the native backend's
- * listener registration and ordering stay completely unchanged.
- */
+/* Strip only private OSC 778 input before the native browser input parser sees it. */
 Object.defineProperty(stdin, 'emit', {
   configurable: true,
   writable: true,
