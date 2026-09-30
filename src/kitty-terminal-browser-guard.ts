@@ -142,7 +142,7 @@ if (!kittyCapable) {
 }
 
 if (browserBackend() === "native") {
-  await import("./native-kitty-terminal-browser.ts");
+  await import("./native-trackpad-wrapper.ts");
 } else {
   await import("./kitty-terminal-browser.ts");
 }
