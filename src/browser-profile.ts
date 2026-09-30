@@ -13,6 +13,7 @@ const HIDDEN_WINDOW_POSITION = "--window-position=-32000,-32000";
 const VIRTUAL_WINDOW_POSITION = "--window-position=0,0";
 const VIRTUAL_DISPLAY_ENV = "KITTY_BROWSER_VIRTUAL_DISPLAY";
 const CHROMIUM_SANDBOX_ENV = "KITTY_BROWSER_CHROMIUM_SANDBOX";
+const CHROMIUM_EXECUTABLE_ENV = "KITTY_BROWSER_CHROMIUM_EXECUTABLE";
 
 type MouseClickOptions = Parameters<Mouse["click"]>[2];
 
@@ -37,6 +38,26 @@ const installPointerTiming = (page: Page): void => {
       await originalClick(x, y, { ...(options ?? {}), delay: measuredDelayMs });
     },
   });
+};
+
+const preferredChromiumExecutable = async (): Promise<string | undefined> => {
+  const configured = process.env[CHROMIUM_EXECUTABLE_ENV]?.trim();
+  const packaged = await bundledChromiumExecutable();
+
+  // Honour an explicit executable first. On Linux, otherwise prefer the same
+  // installed Chromium/Chrome that the native backend uses successfully on the
+  // host before falling back to Playwright's bundled Chromium. Some GPU-less
+  // Xvfb hosts cannot initialise ANGLE with the Playwright build even though the
+  // system browser works normally on the same display.
+  if (configured && packaged) return packaged;
+  if (process.platform === "linux") {
+    return Bun.which("google-chrome-stable")
+      ?? Bun.which("google-chrome")
+      ?? Bun.which("chromium")
+      ?? Bun.which("chromium-browser")
+      ?? packaged;
+  }
+  return packaged;
 };
 
 export const profileRoot = (): string =>
@@ -68,7 +89,7 @@ export const launchPersistentBrowser = async (
   const profileDir = profileDirectory(session);
   await mkdir(profileDir, { recursive: true });
 
-  const executablePath = await bundledChromiumExecutable();
+  const executablePath = await preferredChromiumExecutable();
   const virtualDisplay = process.platform === "linux" && process.env[VIRTUAL_DISPLAY_ENV] === "1";
   const args = [virtualDisplay ? VIRTUAL_WINDOW_POSITION : HIDDEN_WINDOW_POSITION];
   const chromiumSandbox = process.env[CHROMIUM_SANDBOX_ENV] !== "0";
